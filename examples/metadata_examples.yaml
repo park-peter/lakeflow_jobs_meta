@@ -1,0 +1,132 @@
+# Example Metadata Configurations for Lakeflow Job Meta Framework
+# This file demonstrates different task types and use cases
+
+metadata_version: "1.0"
+
+modules:
+  # Example 1: SQL Query Task - Inline SQL Query
+  - module_name: "data_quality_checks"
+    description: "Daily data quality validations using inline SQL queries"
+    sources:
+      - source_id: "check_null_rates"
+        source_type: "sql"
+        execution_order: 1
+        transformation_config:
+          task_type: "sql_query"
+          sql_task:
+            sql_query: |
+              WITH null_analysis AS (
+                SELECT 
+                  COUNT(*) as total_rows,
+                  SUM(CASE WHEN customer_id IS NULL THEN 1 ELSE 0 END) as null_customer_id,
+                  SUM(CASE WHEN email IS NULL THEN 1 ELSE 0 END) as null_email
+                FROM bronze.customers
+                WHERE date = CURRENT_DATE()
+              )
+              SELECT 
+                total_rows,
+                ROUND(null_customer_id * 100.0 / NULLIF(total_rows, 0), 2) as customer_id_null_pct,
+                ROUND(null_email * 100.0 / NULLIF(total_rows, 0), 2) as email_null_pct,
+                CASE 
+                  WHEN customer_id_null_pct > CAST('${threshold}' AS DOUBLE) THEN 'FAIL'
+                  WHEN email_null_pct > CAST('${threshold}' AS DOUBLE) THEN 'FAIL'
+                  ELSE 'PASS'
+                END as quality_status
+              FROM null_analysis
+            parameters:
+              threshold: "5.0"
+
+  # Example 2: SQL File Tasks - Transformations
+  - module_name: "bronze_to_silver"
+    description: "Transform bronze data to silver layer using SQL files"
+    sources:
+      - source_id: "customers_transformation"
+        source_type: "sql"
+        execution_order: 1
+        transformation_config:
+          task_type: "sql_file"
+          sql_task:
+            sql_file_path: "/Workspace/examples/sql_file_task/03_bronze_to_silver_transformation.sql"
+            parameters: {}
+      
+      - source_id: "sales_transformation"
+        source_type: "sql"
+        execution_order: 1  # Parallel with customers
+        transformation_config:
+          task_type: "sql_file"
+          sql_task:
+            sql_file_path: "/Workspace/examples/sql_file_task/05_incremental_load.sql"
+            parameters: {}
+      
+      - source_id: "sales_aggregation"
+        source_type: "sql"
+        execution_order: 2  # Depends on sales_transformation
+        transformation_config:
+          task_type: "sql_file"
+          sql_task:
+            sql_file_path: "/Workspace/examples/sql_file_task/02_daily_aggregations.sql"
+            parameters: {}
+
+  # Example 3: Mixed Task Types - Notebook + SQL
+  - module_name: "ingestion_and_validation"
+    description: "Ingest data via notebook, then validate with SQL"
+    sources:
+      - source_id: "delta_table_ingestion"
+        source_type: "delta_table"
+        execution_order: 1
+        source_config:
+          catalog: "bronze"
+          schema: "raw_data"
+          table: "source_customers"
+        target_config:
+          catalog: "bronze"
+          schema: "raw_data"
+          table: "customers"
+          write_mode: "append"
+        transformation_config:
+          task_type: "notebook"
+          notebook_path: "/Workspace/examples/notebook_task/sample_ingestion_notebook.ipynb"
+      
+      - source_id: "validate_customer_data"
+        source_type: "sql"
+        execution_order: 2  # Runs after ingestion
+        transformation_config:
+          task_type: "sql_query"
+          sql_task:
+            sql_query: |
+              SELECT 
+                COUNT(*) as total_records,
+                COUNT(DISTINCT customer_id) as unique_customers,
+                MIN(ingestion_timestamp) as earliest_ingestion,
+                MAX(ingestion_timestamp) as latest_ingestion
+              FROM bronze.raw_data.customers
+              WHERE DATE(ingestion_timestamp) = CURRENT_DATE()
+
+  # Example 4: SQL Tasks with Saved Queries
+  - module_name: "reporting_queries"
+    description: "Use pre-saved SQL queries from Databricks SQL"
+    sources:
+      - source_id: "daily_sales_report"
+        source_type: "sql"
+        execution_order: 1
+        transformation_config:
+          task_type: "sql_query"
+          sql_task:
+            query_id: "abc123-def456-ghi789"  # ID of saved query in Databricks SQL
+            parameters:
+              report_date: "CURRENT_DATE()"
+
+  # Example 5: SQL File Task - Data Freshness Monitoring
+  - module_name: "data_freshness_monitoring"
+    description: "Monitor data freshness across multiple tables using SQL file task"
+    sources:
+      - source_id: "check_data_freshness"
+        source_type: "sql"
+        execution_order: 1
+        transformation_config:
+          task_type: "sql_file"
+          sql_task:
+            sql_file_path: "/Workspace/examples/sql_file_task/04_data_freshness_check.sql"
+            parameters:
+              max_hours: "24"
+
