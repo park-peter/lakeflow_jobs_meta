@@ -85,9 +85,10 @@ def create_or_update_jobs(
         control_table: Name of the control table (defaults to
             "main.default.job_metadata_control_table")
         default_pause_status: Default pause state for jobs with triggers/schedules. 
-            When False (default): Jobs are created active and run immediately.
-            When True: Jobs with continuous/schedule/trigger are created paused.
+            When False (default): Jobs with triggers/schedules are created active (UNPAUSED).
+            When True: Jobs with triggers/schedules are created paused (PAUSED).
             Can be overridden by explicit pause_status in YAML metadata.
+            Manual (on-demand) jobs must be triggered manually regardless of this setting.
         yaml_path: Optional path to load metadata from before orchestrating.
             Can be:
             - Path to a YAML file (e.g., "/Workspace/path/to/metadata.yaml")

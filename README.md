@@ -248,17 +248,17 @@ jobs = jm.create_or_update_jobs(
 
 ### Pause Status Management
 
-The `default_pause_status` parameter controls the initial state of jobs with triggers or schedules:
+The `default_pause_status` parameter controls the initial pause state of jobs with triggers or schedules:
 
 **`default_pause_status=False` (default behavior):**
-- Jobs are created in active state
-- Jobs with continuous/schedule/trigger start immediately
-- Jobs run immediately after creation (unless they have triggers/schedules)
+- Jobs with continuous/schedule/trigger are created in **active** (UNPAUSED) state
+- Jobs will execute according to their defined triggers/schedules
+- Manual (on-demand) jobs are not affected and must be triggered manually
 
 **`default_pause_status=True`:**
-- Jobs with continuous/schedule/trigger are created in paused state
-- Jobs do NOT run immediately after creation
-- You must manually unpause them or set `pause_status: UNPAUSED` in YAML
+- Jobs with continuous/schedule/trigger are created in **paused** (PAUSED) state
+- Jobs will NOT execute automatically until manually unpaused
+- Manual (on-demand) jobs are not affected and must be triggered manually
 
 **Explicit `pause_status` in YAML always overrides the default:**
 ```yaml
@@ -271,7 +271,7 @@ jobs:
         # ...
 ```
 
-**Job Update Behavior:**
+**Pause Status for Updates:**
 - For job updates, `default_pause_status` does NOT affect running jobs
 - Pause status only changes if explicitly set in YAML metadata
 - This prevents accidentally pausing production jobs during updates
@@ -290,6 +290,35 @@ jobs = jm.create_or_update_jobs(
     default_pause_status=False  # Jobs created active (default)
 )
 ```
+
+### Job Update Behavior (Important!)
+
+When updating existing jobs, the framework **completely replaces** the job definition with what's in your YAML metadata:
+
+**What this means:**
+- ✅ Job definition is fully synchronized with metadata
+- ✅ Manual changes in Databricks UI are **overwritten**
+- ✅ Parameters, tags, or settings not in metadata are **removed**
+- ✅ Ensures consistency between metadata and deployed jobs
+
+**Example:**
+```yaml
+# metadata.yaml
+jobs:
+  - job_name: "my_job"
+    parameters:
+      env: "prod"
+      region: "us-west"
+```
+
+If you manually added a `debug: "true"` parameter in the Databricks UI, running `create_or_update_jobs` will:
+1. Remove the `debug` parameter (not in metadata)
+2. Keep only `env` and `region` (defined in metadata)
+
+**Best Practice:**
+- Always define all job settings in YAML metadata
+- Avoid manual changes in Databricks UI for managed jobs
+- Use metadata as the single source of truth
 
 ## Testing
 

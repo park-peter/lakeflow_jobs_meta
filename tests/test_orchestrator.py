@@ -287,7 +287,7 @@ class TestJobOrchestrator:
         job_id = orchestrator.create_or_update_job("test_job")
 
         assert job_id == 12345
-        mock_workspace_client.jobs.update.assert_called_once()
+        mock_workspace_client.jobs.reset.assert_called_once()
 
     @patch("lakeflow_jobs_meta.orchestrator.serialize_task_for_api")
     @patch("lakeflow_jobs_meta.orchestrator.JobOrchestrator.generate_tasks_for_job")

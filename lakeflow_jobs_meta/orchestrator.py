@@ -902,7 +902,7 @@ class JobOrchestrator:
                 if job_settings_config.get("parameters"):
                     job_settings.parameters = job_settings_config["parameters"]
 
-                self.workspace_client.jobs.update(
+                self.workspace_client.jobs.reset(
                     job_id=stored_job_id,
                     new_settings=job_settings,
                 )
@@ -1247,24 +1247,6 @@ class JobOrchestrator:
             try:
                 job_id = self.create_or_update_job(job_name, default_pause_status=default_pause_status)
                 created_jobs.append({"job": job_name, "job_id": job_id})
-
-                # Run jobs immediately unless default_pause_status is True
-                if not default_pause_status:
-                    try:
-                        run_result = self.workspace_client.jobs.run_now(job_id=job_id)
-                        logger.info(
-                            "Job '%s': Started job run " "(Job ID: %d, Run ID: %d)",
-                            job_name,
-                            job_id,
-                            run_result.run_id,
-                        )
-                    except Exception as run_error:
-                        logger.error(
-                            "Job '%s': Failed to start job run " "(Job ID: %d): %s",
-                            job_name,
-                            job_id,
-                            str(run_error),
-                        )
 
             except Exception as e:
                 logger.error(
