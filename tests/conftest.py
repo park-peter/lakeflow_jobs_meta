@@ -72,7 +72,7 @@ def sample_yaml_config():
                 'tasks': [
                     {
                         'task_key': 'task1',
-                        'task_type': 'notebook',
+                            'task_type': 'notebook',
                         'depends_on': '[]',
                         'file_path': '/Workspace/test/notebook',
                         'parameters': {

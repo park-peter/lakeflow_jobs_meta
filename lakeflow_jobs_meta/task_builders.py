@@ -38,7 +38,6 @@ def create_task_from_config(
     task_data: Dict[str, Any],
     control_table: str,
     depends_on_task_keys: Optional[List[str]] = None,
-    cluster_id: Optional[str] = None,
     default_warehouse_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a task configuration from task metadata.
@@ -46,7 +45,6 @@ def create_task_from_config(
     Args:
         task_data: Task dictionary from control table (can be dict or Row-like object)
         depends_on_task_keys: List of task_key strings this task depends on
-        cluster_id: Optional cluster ID for the task
         default_warehouse_id: Optional default SQL warehouse ID for SQL tasks
 
     Returns:
@@ -80,19 +78,16 @@ def create_task_from_config(
     except (json.JSONDecodeError, TypeError) as e:
         raise ValueError(f"Invalid task_config JSON for task_key '{task_key}': {str(e)}")
 
-    # Extract parameters from task_config
-    parameters_json = task_config_json.get("parameters", {})
-
     if task_type == TASK_TYPE_NOTEBOOK:
-        task_config = create_notebook_task_config(task_key, task_config_json, parameters_json, control_table)
+        task_config = create_notebook_task_config(task_key, task_config_json)
     elif task_type == TASK_TYPE_SQL_QUERY:
-        task_config = create_sql_query_task_config(task_key, task_config_json, parameters_json, default_warehouse_id)
+        task_config = create_sql_query_task_config(task_key, task_config_json, default_warehouse_id)
     elif task_type == TASK_TYPE_SQL_FILE:
-        task_config = create_sql_file_task_config(task_key, task_config_json, parameters_json, default_warehouse_id)
+        task_config = create_sql_file_task_config(task_key, task_config_json, default_warehouse_id)
     elif task_type == TASK_TYPE_PYTHON_WHEEL:
-        task_config = create_python_wheel_task_config(task_key, task_config_json, parameters_json)
+        task_config = create_python_wheel_task_config(task_key, task_config_json)
     elif task_type == TASK_TYPE_SPARK_JAR:
-        task_config = create_spark_jar_task_config(task_key, task_config_json, parameters_json)
+        task_config = create_spark_jar_task_config(task_key, task_config_json)
     elif task_type == TASK_TYPE_PIPELINE:
         task_config = create_pipeline_task_config(task_key, task_config_json)
     elif task_type == TASK_TYPE_DBT:
@@ -125,19 +120,21 @@ def create_task_from_config(
     return task_config
 
 
-def create_notebook_task_config(
-    task_key: str, task_config: Dict[str, Any], parameters: Dict[str, Any], control_table: str
-) -> Dict[str, Any]:
+def create_notebook_task_config(task_key: str, task_config: Dict[str, Any]) -> Dict[str, Any]:
     """Create notebook task configuration.
 
     Args:
         task_key: Sanitized task key
-        task_config: Task configuration dictionary (contains file_path, timeout_seconds, etc.)
-        parameters: Task parameters dictionary
-        control_table: Name of the control table containing metadata
+        task_config: Task configuration dictionary (contains file_path, task_parameters, etc.)
 
     Returns:
         Notebook task configuration dictionary
+
+    Note:
+        Only user-defined task-level parameters from metadata are passed to the notebook.
+        Job-level parameters are set at JobSettings level and automatically pushed down by Databricks.
+        If notebooks use widgets (like task_key, control_table), Databricks Jobs UI
+        automatically adds them when the notebook is attached to a job.
     """
     file_path = task_config.get("file_path")
     if not file_path:
@@ -145,10 +142,12 @@ def create_notebook_task_config(
 
     validate_notebook_path(file_path)
 
-    # Build base_parameters from task parameters + framework parameters
-    base_parameters = dict(parameters)
-    base_parameters["task_key"] = task_key
-    base_parameters["control_table"] = control_table
+    # Extract task-level parameters from task_config
+    task_parameters = task_config.get("parameters", {})
+
+    # Pass only user-defined task-level parameters from metadata
+    # Job-level parameters are handled separately at JobSettings level
+    base_parameters = dict(task_parameters) if task_parameters else {}
 
     return {
         "task_key": task_key,
@@ -176,22 +175,22 @@ def _build_sql_task_parameters(parameters: Dict[str, Any]) -> Dict[str, str]:
 
 
 def create_sql_query_task_config(
-    task_key: str, task_config: Dict[str, Any], parameters: Dict[str, Any], default_warehouse_id: Optional[str] = None
+    task_key: str, task_config: Dict[str, Any], default_warehouse_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Create SQL query task configuration.
 
     Note: warehouse_id is REQUIRED for SQL tasks per Databricks Jobs API.
     If not provided in task_config, will use default_warehouse_id if available.
 
-    SQL queries should use parameter syntax (:parameter_name). Parameters are defined in
-    parameters dictionary and can use Databricks dynamic value references.
+    SQL queries should use parameter syntax (:parameter_name). Task-level parameters are defined in
+    task_config and can use Databricks dynamic value references.
+    Job-level parameters are set at JobSettings level and automatically pushed down by Databricks.
 
     See: https://docs.databricks.com/aws/en/jobs/dynamic-value-references
 
     Args:
         task_key: Sanitized task key
-        task_config: Task configuration dictionary (contains warehouse_id, sql_query, query_id, etc.)
-        parameters: Task parameters dictionary
+        task_config: Task configuration dictionary (contains warehouse_id, sql_query, query_id, task_parameters, etc.)
         default_warehouse_id: Optional default SQL warehouse ID to use if not specified in config
 
     Returns:
@@ -210,13 +209,17 @@ def create_sql_query_task_config(
             f"Either specify warehouse_id in task_config or provide default_warehouse_id to orchestrator."
         )
 
+    # Extract task-level parameters from task_config
+    task_parameters = task_config.get("parameters", {})
+
     sql_query = task_config.get("sql_query")
     query_id = task_config.get("query_id")
 
     if not sql_query and not query_id:
         raise ValueError(f"Must provide either sql_query or query_id for task_key: {task_key}")
 
-    task_parameters = _build_sql_task_parameters(parameters)
+    # Convert task parameters to strings for SQL API
+    task_parameters = _build_sql_task_parameters(task_parameters)
 
     result = {
         "task_key": task_key,
@@ -236,13 +239,14 @@ def create_sql_query_task_config(
 
 
 def create_sql_file_task_config(
-    task_key: str, task_config: Dict[str, Any], parameters: Dict[str, Any], default_warehouse_id: Optional[str] = None
+    task_key: str, task_config: Dict[str, Any], default_warehouse_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Create SQL file task configuration.
 
     SQL file tasks reference SQL files directly. SQL files should use parameter syntax
-    (:parameter_name). Parameters are defined in parameters dictionary and can use Databricks
+    (:parameter_name). Task-level parameters are defined in task_config and can use Databricks
     dynamic value references.
+    Job-level parameters are set at JobSettings level and automatically pushed down by Databricks.
 
     See: https://docs.databricks.com/aws/en/jobs/dynamic-value-references
 
@@ -251,8 +255,7 @@ def create_sql_file_task_config(
 
     Args:
         task_key: Sanitized task key
-        task_config: Task configuration dictionary (contains warehouse_id, file_path, etc.)
-        parameters: Task parameters dictionary
+        task_config: Task configuration dictionary (contains warehouse_id, file_path, task_parameters, etc.)
         default_warehouse_id: Optional default SQL warehouse ID to use if not specified in config
 
     Returns:
@@ -275,8 +278,12 @@ def create_sql_file_task_config(
     if not file_path:
         raise ValueError(f"Missing file_path for task_key: {task_key}")
 
+    # Extract task-level parameters from task_config
+    task_parameters = task_config.get("parameters", {})
     file_source = task_config.get("file_source", "WORKSPACE")
-    task_parameters = _build_sql_task_parameters(parameters)
+
+    # Convert task parameters to strings for SQL API
+    task_parameters = _build_sql_task_parameters(task_parameters)
 
     return {
         "task_key": task_key,
@@ -292,15 +299,12 @@ def create_sql_file_task_config(
     }
 
 
-def create_python_wheel_task_config(
-    task_key: str, task_config: Dict[str, Any], parameters: Dict[str, Any]
-) -> Dict[str, Any]:
+def create_python_wheel_task_config(task_key: str, task_config: Dict[str, Any]) -> Dict[str, Any]:
     """Create Python wheel task configuration.
 
     Args:
         task_key: Sanitized task key
-        task_config: Task configuration dictionary (contains package_name, entry_point, parameters list)
-        parameters: Task parameters dictionary (will be converted to list)
+        task_config: Task configuration dictionary (contains package_name, entry_point, task_parameters list)
 
     Returns:
         Python wheel task configuration dictionary
@@ -316,12 +320,12 @@ def create_python_wheel_task_config(
     if not entry_point:
         raise ValueError(f"Missing entry_point for task_key: {task_key}")
 
-    # Parameters for Python wheel tasks are typically a list
-    parameters_list = task_config.get("parameters", [])
-    if isinstance(parameters_list, dict):
-        parameters_list = list(parameters_list.values())
-    elif not isinstance(parameters_list, list):
-        parameters_list = []
+    # Extract task-level parameters from task_config (typically a list for Python wheel tasks)
+    task_parameters = task_config.get("parameters", [])
+    if isinstance(task_parameters, dict):
+        task_parameters = list(task_parameters.values())
+    elif not isinstance(task_parameters, list):
+        task_parameters = []
 
     return {
         "task_key": task_key,
@@ -329,20 +333,17 @@ def create_python_wheel_task_config(
         "python_wheel_task": {
             "package_name": package_name,
             "entry_point": entry_point,
-            "parameters": parameters_list,
+            "parameters": task_parameters,
         },
     }
 
 
-def create_spark_jar_task_config(
-    task_key: str, task_config: Dict[str, Any], parameters: Dict[str, Any]
-) -> Dict[str, Any]:
+def create_spark_jar_task_config(task_key: str, task_config: Dict[str, Any]) -> Dict[str, Any]:
     """Create Spark JAR task configuration.
 
     Args:
         task_key: Sanitized task key
-        task_config: Task configuration dictionary (contains main_class_name, parameters list)
-        parameters: Task parameters dictionary (will be converted to list)
+        task_config: Task configuration dictionary (contains main_class_name, task_parameters list)
 
     Returns:
         Spark JAR task configuration dictionary
@@ -354,19 +355,19 @@ def create_spark_jar_task_config(
     if not main_class_name:
         raise ValueError(f"Missing main_class_name for task_key: {task_key}")
 
-    # Parameters for Spark JAR tasks are typically a list
-    parameters_list = task_config.get("parameters", [])
-    if isinstance(parameters_list, dict):
-        parameters_list = list(parameters_list.values())
-    elif not isinstance(parameters_list, list):
-        parameters_list = []
+    # Extract task-level parameters from task_config (typically a list for Spark JAR tasks)
+    task_parameters = task_config.get("parameters", [])
+    if isinstance(task_parameters, dict):
+        task_parameters = list(task_parameters.values())
+    elif not isinstance(task_parameters, list):
+        task_parameters = []
 
     return {
         "task_key": task_key,
         "task_type": TASK_TYPE_SPARK_JAR,
         "spark_jar_task": {
             "main_class_name": main_class_name,
-            "parameters": parameters_list,
+            "parameters": task_parameters,
         },
     }
 
@@ -462,13 +463,9 @@ def create_dbt_task_config(
                 f"warehouse_id takes precedence and profiles_directory will be ignored."
             )
         dbt_config["profiles_directory"] = profiles_dir
-        logger.debug("DEBUG: Added profiles_directory to dbt_config: %s", profiles_dir)
     project_dir = task_config.get("project_directory")
-    logger.debug("DEBUG: project_directory for task_key '%s': %s (type: %s)", task_key, project_dir, type(project_dir))
     if project_dir:
         dbt_config["project_directory"] = project_dir
-        logger.debug("DEBUG: Added project_directory to dbt_config: %s", project_dir)
-    logger.debug("DEBUG: Final dbt_config for task_key '%s': %s", task_key, dbt_config)
     if "catalog" in task_config:
         dbt_config["catalog"] = task_config["catalog"]
     if "schema" in task_config:
@@ -481,12 +478,11 @@ def create_dbt_task_config(
     }
 
 
-def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Optional[str] = None) -> Task:
+def convert_task_config_to_sdk_task(task_config: Dict[str, Any]) -> Task:
     """Convert task configuration dictionary to Databricks SDK Task object.
 
     Args:
         task_config: Task configuration dictionary
-        cluster_id: Optional cluster ID
 
     Returns:
         Databricks SDK Task object
@@ -513,9 +509,7 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
 
     environment_key = task_config.get("environment_key")
     job_cluster_key = task_config.get("job_cluster_key")
-    existing_cluster_id_from_config = task_config.get("existing_cluster_id")
-    # Use existing_cluster_id from config if provided, otherwise fall back to cluster_id parameter
-    final_existing_cluster_id = existing_cluster_id_from_config or cluster_id
+    existing_cluster_id = task_config.get("existing_cluster_id")
 
     # Build notification_settings if provided
     notification_settings_obj = None
@@ -550,7 +544,7 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
                 base_parameters=notebook_config.get("base_parameters", {}),
             ),
             depends_on=task_dependencies,
-            existing_cluster_id=final_existing_cluster_id,
+            existing_cluster_id=existing_cluster_id,
             job_cluster_key=job_cluster_key,
             timeout_seconds=task_timeout,
             run_if=run_if_enum,
@@ -582,7 +576,7 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
             run_if=run_if_enum,
             environment_key=environment_key,
             job_cluster_key=job_cluster_key,
-            existing_cluster_id=final_existing_cluster_id,
+            existing_cluster_id=existing_cluster_id,
             notification_settings=notification_settings_obj,
         )
 
@@ -618,7 +612,7 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
             run_if=run_if_enum,
             environment_key=environment_key,
             job_cluster_key=job_cluster_key,
-            existing_cluster_id=final_existing_cluster_id,
+            existing_cluster_id=existing_cluster_id,
             notification_settings=notification_settings_obj,
         )
 
@@ -636,7 +630,7 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
             run_if=run_if_enum,
             environment_key=environment_key,
             job_cluster_key=job_cluster_key,
-            existing_cluster_id=final_existing_cluster_id,
+            existing_cluster_id=existing_cluster_id,
             notification_settings=notification_settings_obj,
         )
 
@@ -653,7 +647,7 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
             run_if=run_if_enum,
             environment_key=environment_key,
             job_cluster_key=job_cluster_key,
-            existing_cluster_id=final_existing_cluster_id,
+            existing_cluster_id=existing_cluster_id,
             notification_settings=notification_settings_obj,
         )
 
@@ -669,40 +663,30 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
             run_if=run_if_enum,
             environment_key=environment_key,
             job_cluster_key=job_cluster_key,
-            existing_cluster_id=final_existing_cluster_id,
+            existing_cluster_id=existing_cluster_id,
             notification_settings=notification_settings_obj,
         )
 
     elif task_type == TASK_TYPE_DBT:
         dbt_config = task_config["dbt_task"]
-        logger.debug("DEBUG: Creating DbtTask for task_key '%s', dbt_config: %s", task_key, dbt_config)
         dbt_task_kwargs = {
             "commands": dbt_config["commands"],
         }
         warehouse_id_val = dbt_config.get("warehouse_id")
-        logger.debug("DEBUG: warehouse_id from dbt_config: %s (type: %s)", warehouse_id_val, type(warehouse_id_val))
         if warehouse_id_val:
             dbt_task_kwargs["warehouse_id"] = warehouse_id_val
         profiles_dir_val = dbt_config.get("profiles_directory")
-        logger.debug(
-            "DEBUG: profiles_directory from dbt_config: %s (type: %s)", profiles_dir_val, type(profiles_dir_val)
-        )
         if profiles_dir_val:
             dbt_task_kwargs["profiles_directory"] = profiles_dir_val
         project_dir_val = dbt_config.get("project_directory")
-        logger.debug("DEBUG: project_directory from dbt_config: %s (type: %s)", project_dir_val, type(project_dir_val))
         if project_dir_val:
             dbt_task_kwargs["project_directory"] = project_dir_val
-            logger.debug("DEBUG: Added project_directory to dbt_task_kwargs: %s", project_dir_val)
         catalog_val = dbt_config.get("catalog")
-        logger.debug("DEBUG: catalog from dbt_config: %s (type: %s)", catalog_val, type(catalog_val))
         if catalog_val:
             dbt_task_kwargs["catalog"] = catalog_val
         schema_val = dbt_config.get("schema")
-        logger.debug("DEBUG: schema from dbt_config: %s (type: %s)", schema_val, type(schema_val))
         if schema_val:
             dbt_task_kwargs["schema"] = schema_val
-        logger.debug("DEBUG: Final dbt_task_kwargs for task_key '%s': %s", task_key, dbt_task_kwargs)
         task_obj = Task(
             task_key=task_key,
             dbt_task=DbtTask(**dbt_task_kwargs),
@@ -711,7 +695,7 @@ def convert_task_config_to_sdk_task(task_config: Dict[str, Any], cluster_id: Opt
             run_if=run_if_enum,
             environment_key=environment_key,
             job_cluster_key=job_cluster_key,
-            existing_cluster_id=final_existing_cluster_id,
+            existing_cluster_id=existing_cluster_id,
             notification_settings=notification_settings_obj,
         )
         logger.debug(

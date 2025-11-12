@@ -91,16 +91,21 @@ pip install dist/lakeflow_jobs_meta-0.1.0-py3-none-any.whl
 ```python
 import lakeflow_jobs_meta as jm
 
-# Create or update a single job
-job_id = jm.create_or_update_job(
-    "my_pipeline",
+# Load metadata from YAML file and create/update those jobs
+jobs = jm.create_or_update_jobs(
+    yaml_path="/Workspace/path/to/metadata.yaml",
     control_table="catalog.schema.etl_control"
 )
 
-# Or create/update all jobs
+# Or load from a folder (all YAML files)
 jobs = jm.create_or_update_jobs(
-    control_table="catalog.schema.etl_control",
-    auto_run=False
+    yaml_path="/Workspace/path/to/metadata/",
+    control_table="catalog.schema.etl_control"
+)
+
+# Or create/update all jobs in control table
+jobs = jm.create_or_update_jobs(
+    control_table="catalog.schema.etl_control"
 )
 ```
 
@@ -122,47 +127,48 @@ jobs = jm.create_or_update_jobs(
 
 ### Option 1: YAML File Ingestion (Recommended)
 
-**Option 1a: Single YAML File**
+The `yaml_path` parameter accepts three types of paths:
 
-Load a single YAML file directly:
-
+**1. Single YAML File**
 ```python
-from lakeflow_jobs_meta import JobOrchestrator
-
-orchestrator = JobOrchestrator(control_table="your_catalog.schema.etl_control")
-orchestrator.metadata_manager.load_yaml('./examples/metadata_examples.yaml')
-
-# Or use MetadataManager directly if you only need metadata operations
-from lakeflow_jobs_meta import MetadataManager
-manager = MetadataManager("your_catalog.schema.etl_control")
-manager.load_yaml('./examples/metadata_examples.yaml')
-
-# Or use convenience functions
 import lakeflow_jobs_meta as jm
-jm.load_yaml('./examples/metadata_examples.yaml', control_table="your_catalog.schema.etl_control")
+
+# Load and process jobs from a single YAML file
+jobs = jm.create_or_update_jobs(
+    yaml_path="/Workspace/path/to/metadata.yaml",
+    control_table="your_catalog.schema.etl_control"
+)
 ```
 
-**Option 1b: Unity Catalog Volume with File Arrival Trigger (Recommended for Production)**
+**2. Folder Path (All YAML Files)**
+```python
+import lakeflow_jobs_meta as jm
+
+# Load and process all YAML files in folder (recursive)
+jobs = jm.create_or_update_jobs(
+    yaml_path="/Workspace/path/to/metadata/",
+    control_table="your_catalog.schema.etl_control"
+)
+```
+
+**3. Unity Catalog Volume with File Arrival Trigger (Recommended for Production)**
 
 For production environments, use Databricks file arrival triggers to automatically process YAML files when they're uploaded to a Unity Catalog volume:
 
-1. **Configure File Arrival Trigger**: Set up a file arrival trigger on your job to monitor the Unity Catalog volume where YAML files are stored. See [Databricks File Arrival Triggers](https://docs.databricks.com/aws/en/jobs/file-arrival-triggers) for details.
+1. **Configure File Arrival Trigger**: Set up a file arrival trigger on your job to monitor the Unity Catalog volume. See [Databricks File Arrival Triggers](https://docs.databricks.com/aws/en/jobs/file-arrival-triggers).
 
-2. **Upload YAML Files**: When YAML files are uploaded to the monitored volume, the job automatically triggers.
+2. **Upload YAML Files**: When YAML files are uploaded, the job automatically triggers.
 
-3. **Sync and Update**: The job calls `sync_from_volume()` to load all YAML files and update jobs:
+3. **Process YAML Files**: The job loads and processes all YAML files from the volume:
 
 ```python
 import lakeflow_jobs_meta as jm
 
-# This runs automatically when file arrival trigger fires
-tasks_loaded = jm.sync_from_volume(
-    '/Volumes/catalog/schema/metadata_volume',
+# Automatically runs when file arrival trigger fires
+jobs = jm.create_or_update_jobs(
+    yaml_path="/Volumes/catalog/schema/metadata_volume",
     control_table="your_catalog.schema.etl_control"
 )
-
-# Then create/update jobs
-jobs = jm.create_or_update_jobs(control_table="your_catalog.schema.etl_control")
 ```
 
 **Benefits of File Arrival Triggers:**
@@ -171,7 +177,25 @@ jobs = jm.create_or_update_jobs(control_table="your_catalog.schema.etl_control")
 - Scalable: Handles large numbers of files efficiently
 - No need for continuous monitoring jobs
 
-**Note:** File arrival triggers require Unity Catalog volumes or external locations. The trigger monitors the root or subpath of the volume and recursively checks for new files in all subdirectories.
+**Advanced Usage: Load Separately**
+
+You can also load YAML separately from orchestration:
+
+```python
+import lakeflow_jobs_meta as jm
+
+# Load from file
+num_tasks, job_names = jm.load_yaml("/Workspace/path/to/metadata.yaml")
+
+# Load from folder
+num_tasks, job_names = jm.load_from_folder("/Workspace/path/to/metadata/")
+
+# Load from volume
+num_tasks, job_names = jm.sync_from_volume("/Volumes/catalog/schema/volume")
+
+# Then process all jobs in control table
+jobs = jm.create_or_update_jobs(control_table="your_catalog.schema.etl_control")
+```
 
 ### Option 2: Direct Delta Table Updates
 
@@ -197,28 +221,75 @@ The monitoring job will automatically detect the change and update the job.
 Run the orchestrator manually (for development/testing):
 
 ```python
-from lakeflow_jobs_meta import JobOrchestrator
-
-orchestrator = JobOrchestrator(control_table="your_catalog.schema.etl_control")
-jobs = orchestrator.create_or_update_jobs(auto_run=True)
-
-# Or use convenience function
 import lakeflow_jobs_meta as jm
-jobs = jm.create_or_update_jobs(control_table="your_catalog.schema.etl_control", auto_run=True)
-```
 
-Or with custom table names:
+# Process all jobs in control table
+jobs = jm.create_or_update_jobs(
+    control_table="your_catalog.schema.etl_control"
+)
 
-```python
-orchestrator = JobOrchestrator(
+# Or load from YAML and process those jobs
+jobs = jm.create_or_update_jobs(
+    yaml_path="/Workspace/path/to/metadata.yaml",
+    control_table="your_catalog.schema.etl_control"
+)
+
+# With custom configuration
+jobs = jm.create_or_update_jobs(
+    yaml_path="/Workspace/path/to/metadata/",
     control_table="your_catalog.schema.control_table",
     jobs_table="your_catalog.schema.custom_jobs_table",
-    default_warehouse_id="your-warehouse-id"
+    default_warehouse_id="your-warehouse-id",
+    default_pause_status=False
 )
-jobs = orchestrator.create_or_update_jobs(auto_run=True)
 ```
 
-**Note:** The framework automatically detects changes and updates existing jobs.
+**Note:** When `yaml_path` is provided, only jobs from that path are processed. When not provided, all jobs in the control table are processed.
+
+### Pause Status Management
+
+The `default_pause_status` parameter controls the initial state of jobs with triggers or schedules:
+
+**`default_pause_status=False` (default behavior):**
+- Jobs are created in active state
+- Jobs with continuous/schedule/trigger start immediately
+- Jobs run immediately after creation (unless they have triggers/schedules)
+
+**`default_pause_status=True`:**
+- Jobs with continuous/schedule/trigger are created in paused state
+- Jobs do NOT run immediately after creation
+- You must manually unpause them or set `pause_status: UNPAUSED` in YAML
+
+**Explicit `pause_status` in YAML always overrides the default:**
+```yaml
+jobs:
+  - job_name: "scheduled_job"
+    continuous:
+      pause_status: UNPAUSED  # Explicit - overrides default_pause_status
+    tasks:
+      - task_key: "my_task"
+        # ...
+```
+
+**Job Update Behavior:**
+- For job updates, `default_pause_status` does NOT affect running jobs
+- Pause status only changes if explicitly set in YAML metadata
+- This prevents accidentally pausing production jobs during updates
+
+**Example:**
+```python
+# Create jobs in paused state (for testing/staging)
+jobs = jm.create_or_update_jobs(
+    control_table="catalog.schema.etl_control",
+    default_pause_status=True  # Jobs created paused
+)
+
+# Create jobs active (for production)
+jobs = jm.create_or_update_jobs(
+    control_table="catalog.schema.etl_control",
+    default_pause_status=False  # Jobs created active (default)
+)
+```
 
 ## Testing
 
@@ -420,7 +491,8 @@ All task types support these common parameters:
 
 **Optional Parameters:**
 - `parameters`: Dictionary of parameters passed to the notebook as `base_parameters`
-  - Automatically includes `task_key` and `control_table` parameters
+  - Only user-defined parameters from metadata are passed
+  - If your notebook uses widgets (e.g., `task_key`, `control_table`), Databricks Jobs UI automatically adds them
 
 **Example:**
 ```yaml
@@ -432,6 +504,8 @@ All task types support these common parameters:
     schema: "my_schema"
     source_table: "source_table"
 ```
+
+**Note:** If your notebook defines widgets like `dbutils.widgets.text("task_key", "default")`, the Databricks Jobs UI will automatically populate them when the notebook runs as a job task. You don't need to include these in the `parameters` field.
 
 #### 2. SQL Query Tasks (`task_type: "sql_query"`)
 
@@ -450,7 +524,7 @@ All task types support these common parameters:
   task_type: "sql_query"
   warehouse_id: "abc123"
   sql_query: "SELECT COUNT(*) as row_count FROM :catalog.:schema.customers"
-  parameters:
+    parameters:
     catalog: "my_catalog"
     schema: "my_schema"
 ```
@@ -470,7 +544,7 @@ All task types support these common parameters:
   task_type: "sql_file"
   warehouse_id: "abc123"
   file_path: "/Workspace/Users/user@example.com/transformations.sql"
-  parameters:
+    parameters:
     catalog: "my_catalog"
     schema: "my_schema"
 ```

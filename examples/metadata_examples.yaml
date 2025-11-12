@@ -163,7 +163,11 @@ jobs:
           email_notifications:
             on_failure: ["task-owner@example.com"]
           alert_on_last_attempt: true
-
+    parameters: 
+      - default: "default_value"
+        name: "test_parameter"
+      - default: "default_value"
+        name: "test_parameter_2"
   # Example 7: Pipeline Task
   - job_name: "pipeline_job"
     description: "Run Lakeflow Declarative Pipelines task"

@@ -76,8 +76,7 @@ class JobSettingsWithDictTasks(JobSettings):
                 elif hasattr(task, "as_dict"):
                     try:
                         result["tasks"].append(task.as_dict())
-                    except (AttributeError, TypeError) as e:
-                        logger.debug("DEBUG: Task.as_dict() failed: %s, using serialize_task_for_api", str(e))
+                    except (AttributeError, TypeError):
                         result["tasks"].append(serialize_task_for_api(task))
                 else:
                     result["tasks"].append(task)
@@ -130,45 +129,15 @@ class JobSettingsWithDictTasks(JobSettings):
         if hasattr(self, "parameters") and self.parameters is not None:
             result["parameters"] = self.parameters
         if hasattr(self, "job_clusters") and self.job_clusters is not None:
-            logger.debug("DEBUG: Serializing job_clusters in JobSettingsWithDictTasks.as_dict()")
             result["job_clusters"] = []
-            for idx, cluster in enumerate(self.job_clusters):
-                logger.debug("DEBUG: Processing job_cluster[%d], type: %s", idx, type(cluster))
+            for cluster in self.job_clusters:
                 if isinstance(cluster, dict):
-                    logger.debug("DEBUG: job_cluster[%d] is dict, appending as-is", idx)
                     result["job_clusters"].append(cluster)
-                elif hasattr(cluster, "job_cluster_key"):
-                    logger.debug("DEBUG: job_cluster[%d] has job_cluster_key, extracting manually", idx)
-                    cluster_dict = {"job_cluster_key": cluster.job_cluster_key}
-                    if hasattr(cluster, "new_cluster") and cluster.new_cluster:
-                        if isinstance(cluster.new_cluster, dict):
-                            logger.debug("DEBUG: new_cluster is dict, using as-is")
-                            cluster_dict["new_cluster"] = cluster.new_cluster
-                        elif hasattr(cluster.new_cluster, "as_dict"):
-                            try:
-                                logger.debug("DEBUG: Attempting new_cluster.as_dict()")
-                                cluster_dict["new_cluster"] = cluster.new_cluster.as_dict()
-                            except (AttributeError, TypeError) as e:
-                                logger.debug("DEBUG: new_cluster.as_dict() failed: %s", str(e))
-                        else:
-                            logger.debug("DEBUG: new_cluster has no as_dict method")
-                    result["job_clusters"].append(cluster_dict)
                 elif hasattr(cluster, "as_dict"):
                     try:
-                        logger.debug("DEBUG: Attempting cluster.as_dict()")
                         result["job_clusters"].append(cluster.as_dict())
-                    except (AttributeError, TypeError) as e:
-                        logger.debug("DEBUG: cluster.as_dict() failed: %s", str(e))
-                        if hasattr(cluster, "job_cluster_key"):
-                            cluster_dict = {"job_cluster_key": cluster.job_cluster_key}
-                            if hasattr(cluster, "new_cluster") and cluster.new_cluster:
-                                if isinstance(cluster.new_cluster, dict):
-                                    cluster_dict["new_cluster"] = cluster.new_cluster
-                                else:
-                                    cluster_dict["new_cluster"] = cluster.new_cluster
-                            result["job_clusters"].append(cluster_dict)
-                        else:
-                            result["job_clusters"].append(cluster)
+                    except (AttributeError, TypeError):
+                        result["job_clusters"].append(cluster)
                 else:
                     result["job_clusters"].append(cluster)
         if hasattr(self, "environments") and self.environments is not None:
@@ -236,6 +205,37 @@ def _task_row_to_dict(task_row: Any) -> Dict[str, Any]:
         return task_row
     else:
         return dict(task_row)
+
+
+def _apply_default_pause_status(
+    job_config: Dict[str, Any],
+    default_pause_status: bool,
+    is_update: bool = False,
+) -> Dict[str, Any]:
+    """Apply default pause status to job settings with triggers/schedules.
+
+    Args:
+        job_config: Job configuration dictionary
+        default_pause_status: Default pause status to apply
+        is_update: Whether this is an update operation (don't apply default if True)
+
+    Returns:
+        Modified job configuration
+    """
+    # For updates, only apply pause_status if explicitly set in metadata
+    if is_update:
+        return job_config
+
+    # For creates, apply default_pause_status if not explicitly set
+    for setting_key in ["continuous", "schedule", "trigger"]:
+        if setting_key in job_config:
+            setting = job_config[setting_key]
+            if isinstance(setting, dict) and "pause_status" not in setting:
+                # Apply default only if not explicitly set
+                if default_pause_status:
+                    setting["pause_status"] = "PAUSED"
+
+    return job_config
 
 
 def _convert_job_setting_to_sdk_object(setting_type: str, setting_dict: Dict[str, Any]) -> Any:
@@ -307,7 +307,7 @@ class JobOrchestrator:
         job_id = orchestrator.create_or_update_job("my_job")
 
         # Or create/update all jobs
-        results = orchestrator.create_or_update_jobs(auto_run=True)
+        results = orchestrator.create_or_update_jobs(default_pause_status=False)
         ```
     """
 
@@ -668,7 +668,12 @@ class JobOrchestrator:
             return tasks, first_task_dict
         return tasks
 
-    def create_or_update_job(self, job_name: str, cluster_id: Optional[str] = None) -> int:
+    def create_or_update_job(
+        self,
+        job_name: str,
+        cluster_id: Optional[str] = None,
+        default_pause_status: bool = False,
+    ) -> int:
         """Create new job or update existing job using stored job_id.
 
         Follows Databricks Jobs API requirements:
@@ -679,6 +684,9 @@ class JobOrchestrator:
         Args:
             job_name: Name of the job (from job_name in YAML)
             cluster_id: Optional cluster ID to use for tasks (applies to all tasks)
+            default_pause_status: Default pause state for jobs with triggers/schedules.
+                Only applies if pause_status not explicitly set in metadata.
+                For job updates, only applies if pause_status is explicitly set.
 
         Returns:
             The job ID (either updated or newly created)
@@ -702,10 +710,16 @@ class JobOrchestrator:
         # Get job settings (optimized: use first_task_dict to avoid extra query)
         job_settings_config = self.get_job_settings_for_job(job_name, first_task=first_task_dict)
 
+        # Apply default pause status for jobs with triggers/schedules (create only)
+        if not stored_job_id:
+            job_settings_config = _apply_default_pause_status(
+                job_settings_config, default_pause_status, is_update=False
+            )
+
         sdk_task_objects = []
         sdk_task_dicts = []
         for task_def in task_definitions:
-            sdk_task = convert_task_config_to_sdk_task(task_def, cluster_id)
+            sdk_task = convert_task_config_to_sdk_task(task_def)
 
             needs_query_creation = (
                 hasattr(sdk_task, "sql_task")
@@ -959,47 +973,7 @@ class JobOrchestrator:
                 job_settings_kwargs["tags"] = job_settings_config["tags"]
             job_clusters_config = job_settings_config.get("job_clusters")
             if job_clusters_config and isinstance(job_clusters_config, list):
-                logger.debug("DEBUG: Processing job_clusters for job '%s': %s", job_name, job_clusters_config)
-                job_clusters_list = []
-                for idx, cluster_dict in enumerate(job_clusters_config):
-                    logger.debug("DEBUG: Processing job_cluster[%d]: %s", idx, cluster_dict)
-                    if isinstance(cluster_dict, dict):
-                        new_cluster_dict = cluster_dict.get("new_cluster", {})
-                        logger.debug("DEBUG: new_cluster_dict: %s", new_cluster_dict)
-                        new_cluster_obj = None
-                        if ClusterSpec and new_cluster_dict:
-                            try:
-                                logger.debug("DEBUG: Attempting to create ClusterSpec object")
-                                new_cluster_obj = ClusterSpec(**new_cluster_dict)
-                                logger.debug("DEBUG: ClusterSpec created, testing as_dict()")
-                                new_cluster_obj.as_dict()
-                                logger.debug("DEBUG: ClusterSpec.as_dict() succeeded")
-                            except (AttributeError, Exception) as e:
-                                logger.debug("DEBUG: ClusterSpec.as_dict() failed: %s", str(e))
-                                new_cluster_obj = None
-                        if new_cluster_obj is not None:
-                            logger.debug("DEBUG: Using JobCluster object with ClusterSpec")
-                            job_clusters_list.append(
-                                JobCluster(
-                                    job_cluster_key=cluster_dict["job_cluster_key"],
-                                    new_cluster=new_cluster_obj,
-                                )
-                            )
-                        elif new_cluster_dict:
-                            logger.debug("DEBUG: Using dict for job_cluster (ClusterSpec failed)")
-                            job_cluster_dict = {
-                                "job_cluster_key": cluster_dict["job_cluster_key"],
-                                "new_cluster": new_cluster_dict,
-                            }
-                            logger.debug("DEBUG: job_cluster_dict: %s", job_cluster_dict)
-                            job_clusters_list.append(job_cluster_dict)
-                    elif hasattr(cluster_dict, "job_cluster_key"):
-                        logger.debug("DEBUG: cluster_dict already has job_cluster_key, appending as-is")
-                        job_clusters_list.append(cluster_dict)
-                if job_clusters_list:
-                    logger.debug("DEBUG: Final job_clusters_list: %s", job_clusters_list)
-                    logger.debug("DEBUG: Types in job_clusters_list: %s", [type(c) for c in job_clusters_list])
-                    job_settings_kwargs["job_clusters"] = job_clusters_list
+                job_settings_kwargs["job_clusters"] = job_clusters_config
             environments_config = job_settings_config.get("environments")
             if environments_config and isinstance(environments_config, list):
                 environments_list = []
@@ -1047,15 +1021,6 @@ class JobOrchestrator:
             if job_settings_config.get("parameters"):
                 job_settings_kwargs["parameters"] = job_settings_config["parameters"]
 
-            logger.debug("DEBUG: Final job_settings_kwargs keys: %s", list(job_settings_kwargs.keys()))
-            if "job_clusters" in job_settings_kwargs:
-                logger.debug("DEBUG: job_clusters in kwargs: %s", job_settings_kwargs["job_clusters"])
-                logger.debug("DEBUG: job_clusters types: %s", [type(c) for c in job_settings_kwargs["job_clusters"]])
-
-            logger.debug("DEBUG: About to call jobs.create() for job '%s'", job_name)
-            logger.debug("DEBUG: Converting job_clusters dicts to JobCluster objects with ClusterSpec")
-            logger.debug("DEBUG: Monkey-patching ClusterSpec.as_dict() and JobCluster.as_dict()")
-
             original_cluster_spec_as_dict = ClusterSpec.as_dict if ClusterSpec else None
             original_job_cluster_as_dict = JobCluster.as_dict
 
@@ -1073,10 +1038,7 @@ class JobOrchestrator:
                         elif hasattr(value, "as_dict"):
                             try:
                                 result[key] = value.as_dict()
-                            except (AttributeError, TypeError) as e:
-                                logger.debug(
-                                    "DEBUG: Failed to call .as_dict() on %s.%s: %s", type(self).__name__, key, str(e)
-                                )
+                            except (AttributeError, TypeError):
                                 result[key] = value
                         elif hasattr(value, "value"):
                             result[key] = value.value
@@ -1110,7 +1072,6 @@ class JobOrchestrator:
                 if "job_clusters" in job_settings_kwargs:
                     job_clusters_list = []
                     for cluster_dict in job_settings_kwargs["job_clusters"]:
-                        logger.debug("DEBUG: Creating JobCluster from dict: %s", cluster_dict.get("job_cluster_key"))
                         new_cluster_dict = cluster_dict.get("new_cluster", {})
 
                         if ClusterSpec and new_cluster_dict:
@@ -1124,9 +1085,7 @@ class JobOrchestrator:
                                         if isinstance(availability_str, str):
                                             aws_attrs_dict_copy["availability"] = AwsAvailability(availability_str)
                                     aws_attrs_obj = AwsAttributes(**aws_attrs_dict_copy)
-                                    logger.debug("DEBUG: Created AwsAttributes object with enum availability")
-                                except Exception as e:
-                                    logger.debug("DEBUG: Failed to create AwsAttributes: %s, keeping as dict", str(e))
+                                except Exception:
                                     new_cluster_dict["aws_attributes"] = aws_attrs_dict
 
                             try:
@@ -1144,27 +1103,14 @@ class JobOrchestrator:
                                         new_cluster_dict["runtime_engine"] = RuntimeEngine(runtime_str)
 
                                 new_cluster_obj = ClusterSpec(**new_cluster_dict)
-                                logger.debug("DEBUG: Created ClusterSpec object with proper enums")
                                 cluster_dict["new_cluster"] = new_cluster_obj
-                            except Exception as e:
-                                logger.debug("DEBUG: Failed to create ClusterSpec: %s, keeping as dict", str(e))
+                            except Exception:
+                                pass
 
                         job_cluster = JobCluster(**cluster_dict)
                         job_clusters_list.append(job_cluster)
                     job_settings_kwargs["job_clusters"] = job_clusters_list
-                    logger.debug("DEBUG: Converted %d job_clusters to JobCluster objects", len(job_clusters_list))
 
-                logger.debug("DEBUG: job_settings_kwargs keys: %s", list(job_settings_kwargs.keys()))
-                if "job_clusters" in job_settings_kwargs:
-                    logger.debug("DEBUG: job_clusters type: %s", type(job_settings_kwargs["job_clusters"]))
-                    if job_settings_kwargs["job_clusters"]:
-                        logger.debug("DEBUG: job_clusters[0] type: %s", type(job_settings_kwargs["job_clusters"][0]))
-                        if hasattr(job_settings_kwargs["job_clusters"][0], "new_cluster"):
-                            logger.debug(
-                                "DEBUG: job_clusters[0].new_cluster type: %s",
-                                type(job_settings_kwargs["job_clusters"][0].new_cluster),
-                            )
-                logger.debug("DEBUG: Calling jobs.create() with SDK objects (Task and JobCluster)")
                 created_job = self.workspace_client.jobs.create(**job_settings_kwargs)
             finally:
                 if ClusterSpec and original_cluster_spec_as_dict:
@@ -1190,17 +1136,24 @@ class JobOrchestrator:
 
     def create_or_update_jobs(
         self,
-        auto_run: bool = True,
+        default_pause_status: bool = False,
         yaml_path: Optional[str] = None,
-        sync_yaml: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Create and optionally run jobs for all jobs in control table.
+        """Create and optionally run jobs.
 
         Args:
-            auto_run: Whether to automatically run jobs after creation
-                (default: True)
-            yaml_path: Optional path to YAML file to load before orchestrating
-            sync_yaml: Whether to load YAML file if provided (default: False)
+            default_pause_status: Default pause state for jobs with triggers/schedules.
+                When False (default): Jobs are created active and run immediately.
+                When True: Jobs with continuous/schedule/trigger are created paused.
+                Can be overridden by explicit pause_status in YAML metadata.
+                For updates, only applies if pause_status is explicitly set in metadata.
+            yaml_path: Optional path to load metadata from before orchestrating.
+                Can be:
+                - Path to a YAML file (e.g., "/Workspace/path/to/metadata.yaml")
+                - Path to a folder (e.g., "/Workspace/path/to/metadata/") - loads all YAML files
+                - Path to a Unity Catalog volume (e.g., "/Volumes/catalog/schema/volume")
+                If provided: Only jobs from the yaml_path are processed.
+                If not provided: All jobs in control table are processed.
 
         Returns:
             List of dictionaries with job names and job IDs
@@ -1213,26 +1166,75 @@ class JobOrchestrator:
         # Ensure tables exist
         self.ensure_setup()
 
-        # Optionally load YAML if provided
-        if yaml_path and sync_yaml:
+        # Load metadata and track which jobs to process
+        jobs_to_process = None  # None = process all jobs
+
+        if yaml_path:
             try:
-                tasks_loaded = self.metadata_manager.load_yaml(yaml_path)
-                logger.info(
-                    "Loaded %d tasks from YAML before orchestrating",
-                    tasks_loaded,
-                )
+                # Detect path type and load accordingly
+                if yaml_path.startswith("/Volumes/"):
+                    # Load from Unity Catalog volume
+                    tasks_loaded, job_names = self.sync_from_volume(yaml_path)
+                    jobs_to_process = job_names
+                    logger.info(
+                        "Loaded %d tasks from volume: %s (Jobs: %s)",
+                        tasks_loaded,
+                        yaml_path,
+                        ", ".join(job_names) if job_names else "none",
+                    )
+                elif yaml_path.endswith((".yaml", ".yml")):
+                    # Load from specific YAML file
+                    tasks_loaded, job_names = self.metadata_manager.load_yaml(yaml_path)
+                    jobs_to_process = job_names
+                    logger.info(
+                        "Loaded %d tasks from YAML file: %s (Jobs: %s)",
+                        tasks_loaded,
+                        yaml_path,
+                        ", ".join(job_names) if job_names else "none",
+                    )
+                else:
+                    # Check if it's a folder
+                    import os
+
+                    if os.path.isdir(yaml_path):
+                        # Load from folder (all YAML files in folder)
+                        tasks_loaded, job_names = self.metadata_manager.load_from_folder(yaml_path)
+                        jobs_to_process = job_names
+                        logger.info(
+                            "Loaded %d tasks from folder: %s (Jobs: %s)",
+                            tasks_loaded,
+                            yaml_path,
+                            ", ".join(job_names) if job_names else "none",
+                        )
+                    else:
+                        raise ValueError(
+                            f"Path '{yaml_path}' is not a valid YAML file, folder, or volume path. "
+                            f"Expected: .yaml/.yml file, folder path, or /Volumes/... path"
+                        )
             except FileNotFoundError:
                 logger.warning(
-                    "YAML file not found: %s. Continuing with existing " "table data.",
+                    "Path not found: %s. No jobs will be processed.",
                     yaml_path,
                 )
+                return []
             except Exception as e:
                 logger.warning(
-                    "Failed to load YAML file: %s. Continuing with existing " "table data.",
+                    "Failed to load from path: %s. Error: %s. No jobs will be processed.",
+                    yaml_path,
                     str(e),
                 )
+                return []
 
-        jobs = self.metadata_manager.get_all_jobs()
+        # Get jobs to process
+        if jobs_to_process is not None:
+            # Only process jobs that were loaded from yaml_path
+            jobs = jobs_to_process
+            if not jobs:
+                logger.warning("No jobs found in provided path '%s'", yaml_path)
+                return []
+        else:
+            # Process all jobs in control table
+            jobs = self.metadata_manager.get_all_jobs()
 
         if not jobs:
             logger.warning("No jobs found in control table '%s'", self.control_table)
@@ -1243,10 +1245,11 @@ class JobOrchestrator:
 
         for job_name in jobs:
             try:
-                job_id = self.create_or_update_job(job_name)
+                job_id = self.create_or_update_job(job_name, default_pause_status=default_pause_status)
                 created_jobs.append({"job": job_name, "job_id": job_id})
 
-                if auto_run:
+                # Run jobs immediately unless default_pause_status is True
+                if not default_pause_status:
                     try:
                         run_result = self.workspace_client.jobs.run_now(job_id=job_id)
                         logger.info(

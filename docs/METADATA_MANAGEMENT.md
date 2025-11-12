@@ -12,52 +12,50 @@ This framework uses **Delta tables as the source of truth** for metadata, with Y
 
 **Best for:** Most use cases - version control, easy editing, CI/CD integration
 
+The `yaml_path` parameter accepts three types of paths:
+
 **Option 1a: Single YAML File**
-
-```python
-# Load single YAML file into table
-from lakeflow_jobs_meta import MetadataManager, JobOrchestrator
-
-manager = MetadataManager(CONTROL_TABLE)
-manager.load_yaml('./examples/metadata_examples.yaml')
-
-# Then orchestrate
-orchestrator = JobOrchestrator(control_table=CONTROL_TABLE)
-jobs = orchestrator.create_or_update_jobs()
-```
-
-**Or pass YAML path directly to orchestrator:**
-```python
-from lakeflow_jobs_meta import JobOrchestrator
-
-orchestrator = JobOrchestrator(control_table=CONTROL_TABLE)
-jobs = orchestrator.create_or_update_jobs(
-    yaml_path='./examples/metadata_examples.yaml',
-    sync_yaml=True
-)
-```
-
-**Option 1b: Unity Catalog Volume with File Arrival Trigger (Recommended for Production)**
-
-For production environments, use Databricks file arrival triggers to automatically process YAML files when they're uploaded to a Unity Catalog volume:
-
-1. **Configure File Arrival Trigger**: Set up a file arrival trigger on your job to monitor the Unity Catalog volume where YAML files are stored. See [Databricks File Arrival Triggers](https://docs.databricks.com/aws/en/jobs/file-arrival-triggers) for details.
-
-2. **Upload YAML Files**: When YAML files are uploaded to the monitored volume, the job automatically triggers.
-
-3. **Sync and Update**: The job calls `sync_from_volume()` to load all YAML files and update jobs:
 
 ```python
 import lakeflow_jobs_meta as jm
 
-# This runs automatically when file arrival trigger fires
-tasks_loaded = jm.sync_from_volume(
-    '/Volumes/catalog/schema/metadata_volume',
+# Load and process a single YAML file
+jobs = jm.create_or_update_jobs(
+    yaml_path="/Workspace/path/to/metadata.yaml",
     control_table=CONTROL_TABLE
 )
+```
 
-# Then create/update jobs
-jobs = jm.create_or_update_jobs(control_table=CONTROL_TABLE)
+**Option 1b: Folder Path (All YAML Files)**
+
+```python
+import lakeflow_jobs_meta as jm
+
+# Load and process all YAML files in folder (recursive)
+jobs = jm.create_or_update_jobs(
+    yaml_path="/Workspace/path/to/metadata/",
+    control_table=CONTROL_TABLE
+)
+```
+
+**Option 1c: Unity Catalog Volume with File Arrival Trigger (Recommended for Production)**
+
+For production environments, use Databricks file arrival triggers to automatically process YAML files when they're uploaded to a Unity Catalog volume:
+
+1. **Configure File Arrival Trigger**: Set up a file arrival trigger on your job to monitor the Unity Catalog volume. See [Databricks File Arrival Triggers](https://docs.databricks.com/aws/en/jobs/file-arrival-triggers).
+
+2. **Upload YAML Files**: When YAML files are uploaded, the job automatically triggers.
+
+3. **Process YAML Files**: The job loads and processes all YAML files:
+
+```python
+import lakeflow_jobs_meta as jm
+
+# Automatically runs when file arrival trigger fires
+jobs = jm.create_or_update_jobs(
+    yaml_path="/Volumes/catalog/schema/metadata_volume",
+    control_table=CONTROL_TABLE
+)
 ```
 
 **Benefits of File Arrival Triggers:**
@@ -66,7 +64,21 @@ jobs = jm.create_or_update_jobs(control_table=CONTROL_TABLE)
 - Scalable: Handles large numbers of files efficiently
 - No need for continuous monitoring jobs
 
-**Note:** File arrival triggers require Unity Catalog volumes or external locations. The trigger monitors the root or subpath of the volume and recursively checks for new files in all subdirectories.
+**Advanced Usage:**
+
+Load YAML separately from orchestration:
+
+```python
+import lakeflow_jobs_meta as jm
+
+# Load from file, folder, or volume
+num_tasks, job_names = jm.load_yaml("/Workspace/path/to/metadata.yaml")
+num_tasks, job_names = jm.load_from_folder("/Workspace/path/to/metadata/")
+num_tasks, job_names = jm.sync_from_volume("/Volumes/catalog/schema/volume")
+
+# Then process all jobs in control table
+jobs = jm.create_or_update_jobs(control_table=CONTROL_TABLE)
+```
 
 ---
 

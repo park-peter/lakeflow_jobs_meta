@@ -60,51 +60,62 @@ pip install dist/lakeflow_jobs_meta-0.1.0-py3-none-any.whl
 
 ## Usage as a Lakeflow Jobs Task
 
-### Step 1: Create Monitoring Job
+### Step 1: Create Orchestration Job
 
-Create a Databricks Job with a single Python task:
+Create a Databricks Job with a single notebook task:
 
 **Task Configuration:**
-- **Task Type:** Python script or Notebook
-- **Script/Notebook:** Use `examples/orchestrator_example.ipynb` or create your own
+- **Task Type:** Notebook
+- **Notebook:** Use `examples/orchestrator_example.ipynb` or create your own
 - **Cluster:** Any cluster (or use job clusters)
 
 ### Step 2: Configure Parameters
 
-Configure parameters directly in the notebook or via Databricks notebook widgets:
+Configure parameters via Databricks notebook widgets or base_parameters:
 
 ```python
-# Parameters are set via Databricks widgets or base_parameters
-# Widget names: control_table, volume_path, check_interval_seconds, max_iterations
+# Widget names:
+# - control_table: Delta table containing metadata (required)
+# - yaml_path: Path to YAML file, folder, or UC volume (optional)
+# - default_warehouse_id: Default SQL warehouse ID (optional)
+# - default_queries_path: Path for inline SQL queries (optional)
 ```
 
 ### Step 3: Run the Job
 
-The job will:
-1. Install/import the package
-2. Start monitoring loop
-3. Check for changes every configured interval
-4. Automatically update Databricks jobs when changes detected
+**For On-Demand Execution:**
+- Run the job manually when you want to create/update jobs
+- The job loads metadata from `yaml_path` (if provided) and creates/updates jobs
+
+**For Continuous Monitoring:**
+- Uncomment the monitoring cell in `orchestrator_example.ipynb`
+- The job will monitor for changes and auto-update jobs continuously
+
+**For File Arrival Triggers (Recommended for Production):**
+- Configure a file arrival trigger on your job to monitor a Unity Catalog volume
+- When YAML files are uploaded, the job automatically triggers
+- Set `yaml_path` to the volume path to process all YAML files
 
 ## Monitoring Behavior
 
 ### What It Monitors
 
 1. **Delta Control Table:**
-   - Detects new sources (`created_timestamp == updated_timestamp`)
-   - Detects updated sources (`updated_timestamp > last_check`)
-   - Detects deactivated sources (`is_active` changes)
+   - Detects new tasks (`created_timestamp == updated_timestamp`)
+   - Detects updated tasks (`updated_timestamp > last_check`)
+   - Detects disabled tasks (`disabled` flag changes)
+   - Detects deleted tasks (removed from metadata)
 
 2. **Unity Catalog Volume (if configured):**
    - Detects new YAML files
    - Detects modified YAML files (by modification time)
-   - Detects deleted YAML files
    - Automatically syncs changed YAML files to control table
+   - Loads all YAML files from volume when `yaml_path` points to volume
 
 ### Change Detection Logic
 
 ```python
-# Every configured check interval:
+# Every configured check interval (for continuous monitoring):
 1. Check YAML files in volume (if configured)
    - Compare modification times
    - If changed: sync to control table
@@ -121,19 +132,86 @@ The job will:
 5. Sleep until next check
 ```
 
+### On-Demand vs Continuous Monitoring
+
+**On-Demand (Default):**
+- Use `create_or_update_jobs(yaml_path="/path/to/metadata.yaml")`
+- Loads metadata once and creates/updates jobs
+- Job completes after processing
+
+**Continuous Monitoring (Optional):**
+- Use `MetadataMonitor` class (see `orchestrator_example.ipynb`)
+- Monitors for changes every `check_interval_seconds`
+- Runs indefinitely until `max_iterations` reached
+
+**File Arrival Triggers (Recommended for Production):**
+- Configure Databricks file arrival trigger
+- Job triggers automatically when files are uploaded to volume
+- No continuous monitoring needed - only runs when files change
+
 ## Example Job Configuration
 
-### Using Notebook Task (Recommended)
+### On-Demand Execution (Recommended)
 
 ```python
 # Job task configuration
+{
+    "task_key": "orchestrate_jobs",
+    "notebook_task": {
+        "notebook_path": "/Workspace/Repos/repo/lakeflow-jobs-meta/examples/orchestrator_example",
+        "base_parameters": {
+            "control_table": "your_catalog.schema.etl_control",
+            "yaml_path": "/Workspace/path/to/metadata.yaml",
+            "default_warehouse_id": "your-warehouse-id"
+        }
+    },
+    "existing_cluster_id": "your-cluster-id",
+    "timeout_seconds": 3600  # 1 hour
+}
+```
+
+### With File Arrival Trigger (Production)
+
+```python
+# Job configuration with file arrival trigger
+{
+    "name": "Metadata Sync Job",
+    "trigger": {
+        "file_arrival": {
+            "url": "/Volumes/catalog/schema/metadata_volume/"
+        }
+    },
+    "tasks": [
+        {
+            "task_key": "sync_and_orchestrate",
+            "notebook_task": {
+                "notebook_path": "/Workspace/Repos/repo/lakeflow-jobs-meta/examples/orchestrator_example",
+                "base_parameters": {
+                    "control_table": "your_catalog.schema.etl_control",
+                    "yaml_path": "/Volumes/catalog/schema/metadata_volume",
+                    "default_warehouse_id": "your-warehouse-id"
+                }
+            },
+            "existing_cluster_id": "your-cluster-id",
+            "timeout_seconds": 3600
+        }
+    ]
+}
+```
+
+**Note:** When YAML files are uploaded to the volume, the job automatically triggers, loads all YAML files, and updates jobs.
+
+### Continuous Monitoring (Optional)
+
+```python
+# Job task configuration for continuous monitoring
 {
     "task_key": "monitor_metadata",
     "notebook_task": {
         "notebook_path": "/Workspace/Repos/repo/lakeflow-jobs-meta/examples/orchestrator_example",
         "base_parameters": {
             "control_table": "your_catalog.schema.etl_control",
-            "volume_path": "/Volumes/catalog/schema/metadata",
+            "yaml_path": "/Volumes/catalog/schema/metadata_volume",
             "check_interval_seconds": "60"
         }
     },
@@ -142,41 +220,27 @@ The job will:
 }
 ```
 
-**Note:** Configure parameters via widgets or base_parameters (see `examples/orchestrator_example.ipynb`). For continuous monitoring, uncomment the monitoring cell in the notebook.
-
-### Using Python Script Task
-
-```python
-# Create a simple Python script that calls main() with command-line arguments
-# File: run_monitor.py
-# Usage: python run_monitor.py --control-table your_table --volume-path /Volumes/...
-
-# Job task configuration
-{
-    "task_key": "monitor_metadata",
-    "spark_python_task": {
-        "python_file": "/Workspace/path/to/run_monitor.py",
-        "parameters": [
-            "--control-table", "your_catalog.schema.etl_control",
-            "--volume-path", "/Volumes/catalog/schema/metadata",
-            "--check-interval-seconds", "60"
-        ]
-    },
-    "existing_cluster_id": "your-cluster-id",
-    "timeout_seconds": 0
-}
-```
+**Note:** Uncomment the monitoring cell in `orchestrator_example.ipynb` for continuous monitoring.
 
 ## Configuration Parameters Reference
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `control_table` | ✅ Yes | - | Delta table containing metadata |
-| `volume_path` | ❌ No | None | Unity Catalog volume path for YAML files |
-| `check_interval_seconds` | ❌ No | 60 | How often to check for changes (seconds) |
-| `max_iterations` | ❌ No | None | Max iterations before stopping (None = infinite) |
+| `yaml_path` | ❌ No | None | Path to YAML file, folder, or UC volume |
+| `default_warehouse_id` | ❌ No | None | Default SQL warehouse ID for SQL tasks |
+| `default_queries_path` | ❌ No | None | Directory path for inline SQL queries |
+| `default_pause_status` | ❌ No | False | Default pause state for jobs with triggers/schedules |
+| `jobs_table` | ❌ No | `{control_table}_jobs` | Custom jobs tracking table name |
+| `check_interval_seconds` | ❌ No | 60 | How often to check for changes (continuous monitoring only) |
+| `max_iterations` | ❌ No | None | Max iterations before stopping (continuous monitoring only) |
 
-**Note:** All parameters must be specified explicitly when calling functions. No environment variables are used.
+**Path Types for `yaml_path`:**
+- **Single file**: `/Workspace/path/to/metadata.yaml` - Loads one YAML file
+- **Folder**: `/Workspace/path/to/metadata/` - Loads all YAML files recursively
+- **Volume**: `/Volumes/catalog/schema/volume` - Loads all YAML files from UC volume
+
+**Note:** When `yaml_path` is provided, only jobs from that path are processed. When not provided, all jobs in the control table are processed.
 
 ## Logging
 

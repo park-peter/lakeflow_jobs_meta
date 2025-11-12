@@ -133,7 +133,7 @@ class MetadataManager:
         except Exception as e:
             raise RuntimeError(f"Failed to create control table " f"'{self.control_table}': {str(e)}") from e
 
-    def load_yaml(self, yaml_path: str, validate_file_exists: bool = True) -> int:
+    def load_yaml(self, yaml_path: str, validate_file_exists: bool = True) -> tuple:
         """Load YAML metadata file into control table.
 
         Args:
@@ -141,7 +141,9 @@ class MetadataManager:
             validate_file_exists: Whether to check if file exists before loading
 
         Returns:
-            Number of tasks loaded
+            Tuple of (num_tasks_loaded, job_names_loaded)
+            - num_tasks_loaded: Number of tasks loaded
+            - job_names_loaded: List of job names that were loaded
 
         Raises:
             FileNotFoundError: If YAML file doesn't exist and validate_file_exists=True
@@ -228,9 +230,6 @@ class MetadataManager:
                             f"Task '{task_key}' depends on '{dep_key}' which does not exist in job '{job_name}'"
                         )
 
-                # Extract task-level parameters
-                parameters = task.get("parameters", {})
-
                 # Extract task-specific config
                 # (file_path, sql_query, query_id, warehouse_id, run_if, environment_key, job_cluster_key, existing_cluster_id, notification_settings, etc.)
                 task_config = {}
@@ -301,7 +300,7 @@ class MetadataManager:
 
         if not rows:
             logger.warning(f"No tasks found in YAML file '{yaml_path}'")
-            return 0
+            return (0, [])
 
         spark = _get_spark()
         schema = StructType(
@@ -394,9 +393,82 @@ class MetadataManager:
                 "Deleted %d task(s) that were removed from YAML",
                 deleted_count,
             )
-        return len(rows)
+        return (len(rows), list(yaml_job_tasks.keys()))
 
-    def sync_from_volume(self, volume_path: str) -> int:
+    def load_from_folder(self, folder_path: str) -> tuple:
+        """Load all YAML files from a workspace folder into control table.
+
+        Lists all YAML files (.yaml, .yml) in the folder (including subdirectories),
+        reads each file, and loads them into the control table using load_yaml().
+        Each file is processed independently and errors in one file don't stop
+        processing of others.
+
+        Args:
+            folder_path: Path to workspace folder
+                (e.g., '/Workspace/Users/user@example.com/metadata/')
+
+        Returns:
+            Tuple of (total_tasks_loaded, job_names_loaded)
+            - total_tasks_loaded: Total number of tasks loaded across all YAML files
+            - job_names_loaded: List of unique job names that were loaded
+
+        Raises:
+            FileNotFoundError: If folder doesn't exist
+            RuntimeError: If folder operations fail
+        """
+        import glob
+
+        if not os.path.exists(folder_path):
+            raise FileNotFoundError(f"Folder not found: {folder_path}")
+
+        if not os.path.isdir(folder_path):
+            raise ValueError(f"Path is not a folder: {folder_path}")
+
+        # Ensure control table exists before loading
+        self.ensure_exists()
+
+        # Find all YAML files recursively
+        yaml_files = []
+        for ext in ["*.yaml", "*.yml"]:
+            yaml_files.extend(glob.glob(os.path.join(folder_path, "**", ext), recursive=True))
+
+        if not yaml_files:
+            logger.warning("No YAML files found in folder: %s", folder_path)
+            return (0, [])
+
+        logger.info("Found %d YAML file(s) in folder '%s'", len(yaml_files), folder_path)
+
+        total_loaded = 0
+        all_job_names = set()
+        failed_files = []
+
+        for yaml_file in yaml_files:
+            try:
+                num_tasks, job_names = self.load_yaml(yaml_file, validate_file_exists=False)
+                total_loaded += num_tasks
+                all_job_names.update(job_names)
+                logger.debug("Loaded %d task(s) from '%s'", num_tasks, yaml_file)
+            except Exception as e:
+                logger.error("Failed to load YAML file '%s': %s", yaml_file, str(e))
+                failed_files.append((yaml_file, str(e)))
+                continue
+
+        if failed_files:
+            logger.warning(
+                "Failed to load %d file(s): %s",
+                len(failed_files),
+                [f[0] for f in failed_files],
+            )
+
+        logger.info(
+            "Successfully loaded %d total task(s) from %d YAML file(s) in folder '%s'",
+            total_loaded,
+            len(yaml_files) - len(failed_files),
+            folder_path,
+        )
+        return (total_loaded, list(all_job_names))
+
+    def sync_from_volume(self, volume_path: str) -> tuple:
         """Load YAML files from Unity Catalog volume into control table.
 
         Lists all YAML files (.yaml, .yml) in the volume path (including
@@ -410,7 +482,9 @@ class MetadataManager:
                 '/Volumes/catalog/schema/volume/subfolder')
 
         Returns:
-            Total number of tasks loaded across all YAML files
+            Tuple of (total_tasks_loaded, job_names_loaded)
+            - total_tasks_loaded: Total number of tasks loaded across all YAML files
+            - job_names_loaded: List of unique job names that were loaded
 
         Raises:
             RuntimeError: If Spark is not available or volume operations fail
@@ -500,11 +574,12 @@ class MetadataManager:
 
             if not yaml_files:
                 logger.warning("No YAML files found in %s", volume_path)
-                return 0
+                return (0, [])
 
             logger.info("Found %d YAML file(s) in volume '%s'", len(yaml_files), volume_path)
 
             total_loaded = 0
+            all_job_names = set()
             failed_files = []
 
             for yaml_file in yaml_files:
@@ -530,9 +605,10 @@ class MetadataManager:
                             tmp_path = tmp.name
 
                         # Load YAML into control table
-                        loaded = self.load_yaml(tmp_path, validate_file_exists=False)
-                        total_loaded += loaded
-                        logger.debug("Loaded %d task(s) from '%s'", loaded, yaml_file)
+                        num_tasks, job_names = self.load_yaml(tmp_path, validate_file_exists=False)
+                        total_loaded += num_tasks
+                        all_job_names.update(job_names)
+                        logger.debug("Loaded %d task(s) from '%s'", num_tasks, yaml_file)
                     finally:
                         # Clean up temp file
                         if tmp_path and os.path.exists(tmp_path):
@@ -563,7 +639,7 @@ class MetadataManager:
                 len(yaml_files) - len(failed_files),
                 volume_path,
             )
-            return total_loaded
+            return (total_loaded, list(all_job_names))
 
         except Exception as e:
             logger.error("Error syncing YAML from volume '%s': %s", volume_path, str(e))

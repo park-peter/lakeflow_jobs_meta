@@ -38,8 +38,6 @@ class TestCreateTaskFromConfig:
         assert "notebook_task" in task_config
         assert task_config["notebook_task"]["notebook_path"] == "/Workspace/test/notebook"
         base_params = task_config["notebook_task"]["base_parameters"]
-        assert base_params["task_key"] == "test_task_1"
-        assert base_params["control_table"] == control_table
         assert base_params["catalog"] == "bronze"
 
     def test_sql_query_task_creation(self, sample_task_data):
@@ -107,27 +105,24 @@ class TestCreateNotebookTaskConfig:
 
     def test_valid_notebook_task(self):
         """Test creation of valid notebook task."""
-        task_config_dict = {"file_path": "/Workspace/test/notebook"}
-        parameters = {"catalog": "bronze", "schema": "raw_data"}
-        control_table = "main.examples.etl_control"
-
-        task_config = create_notebook_task_config("test_task_key", task_config_dict, parameters, control_table)
+        task_config_dict = {
+            "file_path": "/Workspace/test/notebook",
+            "parameters": {"catalog": "bronze", "schema": "raw_data"}
+        }
+        task_config = create_notebook_task_config("test_task_key", task_config_dict)
 
         assert task_config["task_key"] == "test_task_key"
         assert task_config["notebook_task"]["notebook_path"] == "/Workspace/test/notebook"
         base_params = task_config["notebook_task"]["base_parameters"]
-        assert base_params["task_key"] == "test_task_key"
-        assert base_params["control_table"] == control_table
         assert base_params["catalog"] == "bronze"
+        assert base_params["schema"] == "raw_data"
 
     def test_missing_file_path(self):
         """Test error when file_path is missing."""
         task_config_dict = {}
-        parameters = {}
-        control_table = "main.examples.etl_control"
 
         with pytest.raises(ValueError, match="Missing file_path"):
-            create_notebook_task_config("test_task_key", task_config_dict, parameters, control_table)
+            create_notebook_task_config("test_task_key", task_config_dict)
 
 
 class TestCreateSqlQueryTaskConfig:
@@ -135,10 +130,13 @@ class TestCreateSqlQueryTaskConfig:
 
     def test_valid_sql_query_task(self):
         """Test creation of valid SQL query task."""
-        task_config_dict = {"warehouse_id": "abc123", "sql_query": "SELECT * FROM table"}
-        parameters = {"param1": "value1"}
+        task_config_dict = {
+            "warehouse_id": "abc123",
+            "sql_query": "SELECT * FROM table",
+            "parameters": {"param1": "value1"}
+        }
 
-        task_config = create_sql_query_task_config("test_task_key", task_config_dict, parameters)
+        task_config = create_sql_query_task_config("test_task_key", task_config_dict)
 
         assert task_config["task_key"] == "test_task_key"
         assert task_config["sql_task"]["warehouse_id"] == "abc123"
@@ -147,28 +145,29 @@ class TestCreateSqlQueryTaskConfig:
 
     def test_sql_query_with_query_id(self):
         """Test SQL query task with query_id."""
-        task_config_dict = {"warehouse_id": "abc123", "query_id": "query_abc123"}
-        parameters = {"param1": "value1"}
+        task_config_dict = {
+            "warehouse_id": "abc123",
+            "query_id": "query_abc123",
+            "parameters": {"param1": "value1"}
+        }
 
-        task_config = create_sql_query_task_config("test_task_key", task_config_dict, parameters)
+        task_config = create_sql_query_task_config("test_task_key", task_config_dict)
 
         assert task_config["sql_task"]["query"]["query_id"] == "query_abc123"
 
     def test_missing_warehouse_id(self):
         """Test error when warehouse_id is missing."""
         task_config_dict = {"sql_query": "SELECT * FROM table"}
-        parameters = {}
 
         with pytest.raises(ValueError, match="Missing warehouse_id"):
-            create_sql_query_task_config("test_task_key", task_config_dict, parameters)
+            create_sql_query_task_config("test_task_key", task_config_dict)
 
     def test_missing_sql_query_and_query_id(self):
         """Test error when both sql_query and query_id are missing."""
         task_config_dict = {"warehouse_id": "abc123"}
-        parameters = {}
 
         with pytest.raises(ValueError, match="Must provide either sql_query or query_id"):
-            create_sql_query_task_config("test_task_key", task_config_dict, parameters)
+            create_sql_query_task_config("test_task_key", task_config_dict)
 
 
 class TestCreateSqlFileTaskConfig:
@@ -176,14 +175,17 @@ class TestCreateSqlFileTaskConfig:
 
     def test_valid_sql_file_task(self):
         """Test creation of valid SQL file task."""
-        task_config_dict = {"warehouse_id": "abc123", "file_path": "/Workspace/test/query.sql"}
-        parameters = {"catalog": "bronze", "schema": "raw_data"}
+        task_config_dict = {
+            "warehouse_id": "abc123",
+            "file_path": "/Workspace/test/query.sql",
+            "parameters": {"catalog": "bronze", "schema": "raw_data"}
+        }
 
-        task_config = create_sql_file_task_config("test_task_key", task_config_dict, parameters)
+        task_config = create_sql_file_task_config("test_task_key", task_config_dict)
 
-        assert task_config["task_key"] == "test_task_key"
+            assert task_config["task_key"] == "test_task_key"
         assert task_config["task_type"] == TASK_TYPE_SQL_FILE
-        assert task_config["sql_task"]["warehouse_id"] == "abc123"
+            assert task_config["sql_task"]["warehouse_id"] == "abc123"
         assert task_config["sql_task"]["file"]["path"] == "/Workspace/test/query.sql"
         assert task_config["sql_task"]["file"]["source"] == "WORKSPACE"
         assert task_config["sql_task"]["parameters"]["catalog"] == "bronze"
@@ -191,10 +193,9 @@ class TestCreateSqlFileTaskConfig:
     def test_missing_file_path(self):
         """Test error when file_path is missing."""
         task_config_dict = {"warehouse_id": "abc123"}
-        parameters = {}
 
         with pytest.raises(ValueError, match="Missing file_path"):
-            create_sql_file_task_config("test_task_key", task_config_dict, parameters)
+            create_sql_file_task_config("test_task_key", task_config_dict)
 
 
 class TestConvertTaskConfigToSdkTask:
@@ -206,10 +207,11 @@ class TestConvertTaskConfigToSdkTask:
             "task_key": "test_task",
             "task_type": TASK_TYPE_NOTEBOOK,
             "notebook_task": {"notebook_path": "/Workspace/test/notebook", "base_parameters": {"param1": "value1"}},
+            "existing_cluster_id": "cluster123",
             "disabled": False,
         }
 
-        sdk_task = convert_task_config_to_sdk_task(task_config, cluster_id="cluster123")
+        sdk_task = convert_task_config_to_sdk_task(task_config)
 
         assert sdk_task.task_key == "test_task"
         assert sdk_task.notebook_task.notebook_path == "/Workspace/test/notebook"
@@ -317,24 +319,22 @@ class TestNotebookTaskType:
 
     def test_notebook_task_with_all_parameters(self):
         """Test notebook task with all possible parameters."""
-        task_config_dict = {"file_path": "/Workspace/users/test/notebook"}
-        parameters = {
-            "catalog": "bronze",
-            "schema": "raw_data",
-            "source_table": "customers",
-            "target_table": "customers_clean",
-            "write_mode": "append",
+        task_config_dict = {
+            "file_path": "/Workspace/users/test/notebook",
+            "parameters": {
+                "catalog": "bronze",
+                "schema": "raw_data",
+                "source_table": "customers",
+                "target_table": "customers_clean",
+                "write_mode": "append",
+            }
         }
-        control_table = "main.examples.etl_control"
-
-        task_config = create_notebook_task_config("my_notebook_task", task_config_dict, parameters, control_table)
+        task_config = create_notebook_task_config("my_notebook_task", task_config_dict)
 
         assert task_config["task_key"] == "my_notebook_task"
         assert task_config["task_type"] == TASK_TYPE_NOTEBOOK
         assert task_config["notebook_task"]["notebook_path"] == "/Workspace/users/test/notebook"
         base_params = task_config["notebook_task"]["base_parameters"]
-        assert base_params["task_key"] == "my_notebook_task"
-        assert base_params["control_table"] == control_table
         assert base_params["catalog"] == "bronze"
         assert base_params["schema"] == "raw_data"
         assert base_params["source_table"] == "customers"
@@ -344,15 +344,11 @@ class TestNotebookTaskType:
     def test_notebook_task_with_empty_parameters(self):
         """Test notebook task with empty parameters dict."""
         task_config_dict = {"file_path": "/Workspace/test/notebook"}
-        parameters = {}
-        control_table = "main.examples.etl_control"
 
-        task_config = create_notebook_task_config("test_task", task_config_dict, parameters, control_table)
+        task_config = create_notebook_task_config("test_task", task_config_dict)
 
         base_params = task_config["notebook_task"]["base_parameters"]
-        assert base_params["task_key"] == "test_task"
-        assert base_params["control_table"] == control_table
-        assert len(base_params) == 2  # Only task_key and control_table
+        assert len(base_params) == 0  # Empty parameters
 
     def test_notebook_task_with_timeout(self, sample_task_data):
         """Test notebook task creation with timeout_seconds."""
@@ -372,15 +368,16 @@ class TestNotebookTaskType:
 
     def test_notebook_task_with_dynamic_value_references(self):
         """Test notebook task with Databricks dynamic value references in parameters."""
-        task_config_dict = {"file_path": "/Workspace/test/notebook"}
-        parameters = {
-            "job_id": "{{job.id}}",
-            "task_name": "{{task.name}}",
-            "start_time": "{{job.start_time.iso_date}}",
+        task_config_dict = {
+            "file_path": "/Workspace/test/notebook",
+            "parameters": {
+                "job_id": "{{job.id}}",
+                "task_name": "{{task.name}}",
+                "start_time": "{{job.start_time.iso_date}}",
+            }
         }
-        control_table = "main.examples.etl_control"
 
-        task_config = create_notebook_task_config("test_task", task_config_dict, parameters, control_table)
+        task_config = create_notebook_task_config("test_task", task_config_dict)
 
         base_params = task_config["notebook_task"]["base_parameters"]
         assert base_params["job_id"] == "{{job.id}}"
@@ -390,11 +387,8 @@ class TestNotebookTaskType:
     def test_notebook_task_with_custom_path(self):
         """Test notebook task with custom path (not standard prefix)."""
         task_config_dict = {"file_path": "/custom/path/notebook"}
-        parameters = {}
-        control_table = "main.examples.etl_control"
 
-        # Should not raise error, just log
-        task_config = create_notebook_task_config("test_task", task_config_dict, parameters, control_table)
+        task_config = create_notebook_task_config("test_task", task_config_dict)
         assert task_config["notebook_task"]["notebook_path"] == "/custom/path/notebook"
 
 
@@ -406,14 +400,14 @@ class TestSqlQueryTaskType:
         task_config_dict = {
             "warehouse_id": "warehouse_abc123",
             "sql_query": "SELECT * FROM :catalog.:schema.customers WHERE date > :start_date",
-        }
-        parameters = {
-            "catalog": "bronze",
-            "schema": "raw_data",
-            "start_date": "2024-01-01",
+            "parameters": {
+                "catalog": "bronze",
+                "schema": "raw_data",
+                "start_date": "2024-01-01",
+            }
         }
 
-        task_config = create_sql_query_task_config("sql_query_task", task_config_dict, parameters)
+        task_config = create_sql_query_task_config("sql_query_task", task_config_dict)
 
         assert task_config["task_key"] == "sql_query_task"
         assert task_config["task_type"] == TASK_TYPE_SQL_QUERY
@@ -844,8 +838,7 @@ class TestPythonWheelTaskType:
         with pytest.raises(ValueError, match="Missing package_name"):
             create_python_wheel_task_config(
                 "test_task",
-                {"entry_point": "main"},
-                {}
+                {"entry_point": "main"}
             )
 
     def test_python_wheel_task_missing_entry_point(self):
@@ -853,8 +846,7 @@ class TestPythonWheelTaskType:
         with pytest.raises(ValueError, match="Missing entry_point"):
             create_python_wheel_task_config(
                 "test_task",
-                {"package_name": "my_package"},
-                {}
+                {"package_name": "my_package"}
             )
 
 
@@ -886,8 +878,7 @@ class TestSparkJarTaskType:
         with pytest.raises(ValueError, match="Missing main_class_name"):
             create_spark_jar_task_config(
                 "test_task",
-                {"parameters": []},
-                {}
+                {"parameters": []}
             )
 
 
