@@ -728,62 +728,37 @@ class JobOrchestrator:
 
                     query_name = f"LakeflowJobMeta_{job_name}_{sdk_task.task_key}"
 
-                    existing_query = None
-                    try:
-                        queries_list = self.workspace_client.queries.list()
-                        for q in queries_list:
-                            if q.display_name == query_name:
-                                existing_query = q
-                                break
-                    except Exception as e:
-                        logger.debug("Could not list queries to check for existing: %s", str(e))
+                    query_request_kwargs = {
+                        "display_name": query_name,
+                        "warehouse_id": warehouse_id,
+                        "query_text": query_text,
+                    }
+                    if self.default_queries_path:
+                        query_request_kwargs["parent_path"] = self.default_queries_path
 
-                    if existing_query:
-                        try:
-                            self.workspace_client.queries.update(
-                                id=existing_query.id,
-                                update_mask="query_text,warehouse_id",
-                                query=CreateQueryRequestQuery(
-                                    query_text=query_text,
-                                    warehouse_id=warehouse_id,
-                                ),
-                            )
-                            query_id = existing_query.id
-                            logger.debug("Updated existing query '%s' (ID: %s)", query_name, query_id)
-                        except Exception:
-                            logger.debug("Failed to update existing query, will create new: %s", str(e))
-                            existing_query = None
+                    created_query = self.workspace_client.queries.create(
+                        query=CreateQueryRequestQuery(**query_request_kwargs)
+                    )
+                    query_id = created_query.id
 
-                    if not existing_query:
-                        query_request_kwargs = {
-                            "display_name": query_name,
-                            "warehouse_id": warehouse_id,
-                            "query_text": query_text,
-                        }
-                        if self.default_queries_path:
-                            query_request_kwargs["parent_path"] = self.default_queries_path
-
-                        created_query = self.workspace_client.queries.create(
-                            query=CreateQueryRequestQuery(**query_request_kwargs)
-                        )
-                        query_id = created_query.id
+                    if self.default_queries_path:
                         logger.debug(
                             "Created query '%s' (ID: %s) at path: %s",
                             query_name,
                             query_id,
-                            self.default_queries_path or "default location",
+                            self.default_queries_path,
                         )
+                    else:
+                        logger.debug("Created query '%s' (ID: %s)", query_name, query_id)
 
                     sdk_task.sql_task.query = SqlTaskQuery(query_id=query_id)
                 except Exception as e:
                     logger.error(
-                        "Failed to create/update query for task '%s': %s",
+                        "Failed to create query for task '%s': %s",
                         sdk_task.task_key,
                         str(e),
                     )
-                    raise RuntimeError(
-                        f"Failed to create/update query for task " f"'{sdk_task.task_key}': {str(e)}"
-                    ) from e
+                    raise RuntimeError(f"Failed to create query for task " f"'{sdk_task.task_key}': {str(e)}") from e
 
             sdk_task_objects.append(sdk_task)
             task_dict = serialize_task_for_api(sdk_task)
