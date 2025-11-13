@@ -171,12 +171,6 @@ jobs = jm.create_or_update_jobs(
 )
 ```
 
-**Benefits of File Arrival Triggers:**
-- Automatic processing when files arrive (no polling needed)
-- Efficient: Only triggers when files actually change
-- Scalable: Handles large numbers of files efficiently
-- No need for continuous monitoring jobs
-
 **Advanced Usage: Load Separately**
 
 You can also load YAML separately from orchestration:
@@ -288,53 +282,13 @@ jobs:
   - For **NEW jobs**: `default_pause_status` is applied
   - For **UPDATES**: Existing pause status is unchanged
 
-**For Job Updates (Important!):**
+**For Job Updates:**
 - `default_pause_status` has **NO effect** on job updates
 - Jobs are **never** auto-run when updating existing jobs
 - Pause status only changes if explicitly set in YAML metadata
 - This prevents accidentally pausing or running production jobs during updates
 
-**Example:**
-```python
-# Create jobs in paused state (for testing/staging)
-jobs = jm.create_or_update_jobs(
-    control_table="catalog.schema.etl_control",
-    default_pause_status=True  # Jobs created paused
-)
-
-# Create jobs active (for production)
-jobs = jm.create_or_update_jobs(
-    control_table="catalog.schema.etl_control",
-    default_pause_status=False  # Jobs created active (default)
-)
-```
-
-### Job Update Behavior (Important!)
-
-When updating existing jobs, the framework **completely replaces** the job definition with what's in your YAML metadata:
-
-**What this means:**
-- ✅ Job definition is fully synchronized with metadata
-- ✅ Manual changes in Databricks UI are **overwritten**
-- ✅ Parameters, tags, or settings not in metadata are **removed**
-- ✅ Ensures consistency between metadata and deployed jobs
-- ✅ Jobs are created with `edit_mode: UI_LOCKED` to prevent accidental UI edits
-
-**Example:**
-```yaml
-# metadata.yaml
-jobs:
-  - job_name: "my_job"
-    parameters:
-      env: "prod"
-      region: "us-west"
-```
-
-If you manually added a `debug: "true"` parameter in the Databricks UI, running `create_or_update_jobs` will:
-1. Remove the `debug` parameter (not in metadata)
-2. Keep only `env` and `region` (defined in metadata)
-
-**UI Lock Protection:**
+### UI Lock Protection:
 
 By default, all jobs created by this framework are set with `edit_mode: UI_LOCKED`, which means:
 - ✅ Jobs **cannot be edited** in the Databricks UI (default)
@@ -357,11 +311,6 @@ jobs:
 ```
 
 **Note:** It's recommended to keep `edit_mode: UI_LOCKED` (default) for production jobs to maintain consistency.
-
-**In the Databricks UI, you'll see:**
-- The "Edit" button is disabled for managed jobs
-- A message indicating the job is managed by an external system
-- You can still trigger jobs manually using the "Run now" button
 
 **Best Practice:**
 - Always define all job settings in YAML metadata
@@ -404,56 +353,244 @@ All tests use pytest with mocking for external dependencies (Databricks SDK, Spa
 
 ## Metadata Schema
 
-Each job in your YAML must have:
+### Job-Level Configuration
+
+Each job in your YAML is defined with the following structure:
+
+#### Required Fields
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `job_name` | String | Unique identifier for the job | `"my_pipeline"` |
+| `tasks` | List | List of task definitions (see Task Configuration below) | See Task Configuration |
+
+#### Optional Fields
+
+| Parameter | Type | Default | Description | Possible Values |
+|-----------|------|---------|-------------|-----------------|
+| `description` | String | None | Human-readable description of the job | Any string |
+| `timeout_seconds` | Integer | `7200` | Maximum time the entire job can run (seconds) | Any positive integer |
+| `max_concurrent_runs` | Integer | `1` | Maximum number of concurrent runs allowed | Any positive integer |
+| `edit_mode` | String | `"UI_LOCKED"` | Whether job can be edited in Databricks UI | `"UI_LOCKED"`, `"EDITABLE"` |
+| `parameters` | Object | None | Job-level parameters (automatically passed to tasks) | Key-value pairs |
+| `tags` | Object | None | Job tags for organization and filtering | Key-value pairs |
+| `queue` | Object | None | Job queue settings | `{enabled: true/false}` |
+| `continuous` | Object | None | Continuous job settings (always-on) | See Continuous Settings below |
+| `trigger` | Object | None | Job trigger settings (file arrival, table update, or periodic) | See Trigger Settings below |
+| `schedule` | Object | None | Scheduled job settings (cron-based) | See Schedule Settings below |
+| `job_clusters` | List | None | Shared cluster definitions for tasks | See Job Clusters below |
+| `environments` | List | None | Python/Scala environment definitions | See Environments below |
+| `notification_settings` | Object | None | Job-level notification settings | See Notification Settings below |
+
+#### Continuous Settings
+
+Used for always-on streaming jobs:
+
+| Parameter | Type | Default | Description | Possible Values |
+|-----------|------|---------|-------------|-----------------|
+| `pause_status` | String | `"UNPAUSED"` | Initial pause state | `"UNPAUSED"`, `"PAUSED"` |
+| `task_retry_mode` | String | `"ON_FAILURE"` | When to retry failed tasks | `"ON_FAILURE"`, `"NEVER"` |
+
+**Example:**
+```yaml
+continuous:
+  pause_status: UNPAUSED
+  task_retry_mode: ON_FAILURE
+```
+
+#### Schedule Settings
+
+Used for cron-scheduled jobs:
+
+| Parameter | Type | Required | Description | Example |
+|-----------|------|----------|-------------|---------|
+| `quartz_cron_expression` | String | Yes | Quartz cron expression | `"0 0 2 * * ?"` (daily at 2am) |
+| `timezone_id` | String | Yes | Timezone for the schedule | `"UTC"`, `"America/Los_Angeles"` |
+| `pause_status` | String | No | Initial pause state | `"UNPAUSED"`, `"PAUSED"` |
+
+**Example:**
+```yaml
+schedule:
+  quartz_cron_expression: "0 0 2 * * ?"
+  timezone_id: "America/Los_Angeles"
+  pause_status: UNPAUSED
+```
+
+#### Trigger Settings
+
+Used for event-driven jobs (file arrival, table update, or periodic):
+
+| Trigger Type | Parameters | Description | Example |
+|--------------|------------|-------------|---------|
+| **File Arrival** | `file_arrival.url` | Trigger when files arrive at path | `url: /Volumes/catalog/schema/folder/` |
+| **Table Update** | `table_update.table_names` | Trigger when tables are updated | `table_names: ["catalog.schema.table"]` |
+| **Periodic** | `periodic.interval`<br>`periodic.unit` | Trigger at regular intervals | `interval: 1`<br>`unit: HOURS` |
+| **All Types** | `pause_status` | Initial pause state | `UNPAUSED` or `PAUSED` |
+
+**Example:**
+```yaml
+trigger:
+  pause_status: UNPAUSED
+  file_arrival:
+    url: /Volumes/catalog/schema/metadata/
+```
+
+#### Job Clusters
+
+Define shared cluster configurations that tasks can reference:
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `job_cluster_key` | String | Unique identifier for this cluster | `"Job_cluster"` |
+| `new_cluster` | Object | Full cluster specification | See Databricks cluster API docs |
+
+**Example:**
+```yaml
+job_clusters:
+  - job_cluster_key: "Job_cluster"
+    new_cluster:
+      spark_version: "16.4.x-scala2.12"
+      node_type_id: "rd-fleet.xlarge"
+      num_workers: 8
+      aws_attributes:
+        availability: SPOT_WITH_FALLBACK
+      data_security_mode: SINGLE_USER
+      runtime_engine: PHOTON
+```
+
+#### Environments
+
+Define Python/Scala environments that tasks can reference:
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `environment_key` | String | Unique identifier for this environment | `"default_python"` |
+| `spec.dependencies` | List | Python dependencies (pip packages) | `["dbt-databricks>=1.0.0"]` |
+| `spec.java_dependencies` | List | Java/Scala dependencies (JARs) | `["/Workspace/.../file.jar"]` |
+| `spec.environment_version` | String | Databricks environment version | `"4"`, `"4-scala-preview"` |
+
+**Example:**
+```yaml
+environments:
+  - environment_key: "default_python"
+    spec:
+      dependencies:
+        - "dbt-databricks>=1.0.0"
+        - "pandas>=1.5.0"
+      environment_version: "4"
+```
+
+#### Notification Settings
+
+Configure job-level email notifications:
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `email_notifications.on_start` | List | Email addresses to notify on job start | `["team@example.com"]` |
+| `email_notifications.on_success` | List | Email addresses to notify on success | `["team@example.com"]` |
+| `email_notifications.on_failure` | List | Email addresses to notify on failure | `["alerts@example.com"]` |
+| `email_notifications.on_duration_warning_threshold_exceeded` | List | Email addresses for duration warnings | `["alerts@example.com"]` |
+| `no_alert_for_skipped_runs` | Boolean | Skip alerts for skipped runs | `true`, `false` |
+| `no_alert_for_canceled_runs` | Boolean | Skip alerts for canceled runs | `true`, `false` |
+| `alert_on_last_attempt` | Boolean | Alert only on last retry attempt | `true`, `false` |
+
+**Example:**
+```yaml
+notification_settings:
+  email_notifications:
+    on_failure: ["alerts@example.com"]
+    on_duration_warning_threshold_exceeded: ["alerts@example.com"]
+  alert_on_last_attempt: true
+```
+
+### Task Configuration
+
+Each task within a job has the following structure:
+
+#### Required Fields
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `task_key` | String | Unique identifier for this task within the job | `"ingest_data"` |
+| `task_type` | String | Type of task to execute | See Task Types section below |
+
+#### Common Optional Fields
+
+These fields are available for all task types:
+
+| Parameter | Type | Default | Description | Possible Values |
+|-----------|------|---------|-------------|-----------------|
+| `depends_on` | List | `[]` | List of task_key values this task depends on | `["task_a", "task_b"]` |
+| `disabled` | Boolean | `false` | Whether this task is disabled | `true`, `false` |
+| `timeout_seconds` | Integer | `3600` | Maximum time this task can run (seconds) | Any positive integer |
+| `run_if` | String | `"ALL_SUCCESS"` | Condition for when this task should run | See Run Conditions below |
+| `job_cluster_key` | String | None | Reference to job-level cluster definition | Must match a `job_clusters` key |
+| `existing_cluster_id` | String | None | Reference to existing all-purpose cluster | Databricks cluster ID |
+| `environment_key` | String | None | Reference to job-level environment | Must match an `environments` key |
+| `notification_settings` | Object | None | Task-level notification settings | Same structure as job-level |
+| `parameters` | Object | None | Task-specific parameters | Key-value pairs or list (depends on task type) |
+
+**Note:** Use either `job_cluster_key` OR `existing_cluster_id`, not both.
+
+#### Run Conditions
+
+The `run_if` parameter controls when a task executes based on dependency outcomes:
+
+| Value | Description |
+|-------|-------------|
+| `ALL_SUCCESS` | Run only if all dependencies succeed (default) |
+| `AT_LEAST_ONE_SUCCESS` | Run if at least one dependency succeeds |
+| `NONE_FAILED` | Run if no dependencies fail (success or skipped) |
+| `ALL_DONE` | Run when all dependencies complete (regardless of status) |
+| `AT_LEAST_ONE_FAILED` | Run if at least one dependency fails |
+| `ALL_FAILED` | Run only if all dependencies fail |
+
+#### Complete Example
 
 ```yaml
 jobs:
-  - job_name: "my_pipeline"      # Required: Job name (becomes job_name in control table)
-    description: "Pipeline description"  # Optional: Description
-    timeout_seconds: 7200          # Optional: Job timeout (default: 7200)
-    max_concurrent_runs: 2         # Optional: Max concurrent runs (default: 1)
-    parameters:                    # Optional: Job-level parameters (pushed down to tasks automatically)
-      default_catalog: "my_catalog"
-    tags:                          # Optional: Job tags
+  - job_name: "etl_pipeline"
+    description: "Daily ETL pipeline for customer data"
+    timeout_seconds: 7200
+    max_concurrent_runs: 1
+    edit_mode: UI_LOCKED
+    parameters:
+      default_catalog: "production"
+    tags:
       department: "engineering"
-    queue:                         # Optional: Job queue settings
-      enabled: true
-    continuous:                    # Optional: Continuous job settings
+      project: "customer_analytics"
+    schedule:
+      quartz_cron_expression: "0 0 2 * * ?"
+      timezone_id: "UTC"
       pause_status: UNPAUSED
-      task_retry_mode: ON_FAILURE
-    trigger:                       # Optional: Job trigger (file_arrival, table_update, or periodic)
-      pause_status: UNPAUSED
-      file_arrival:
-        url: /Volumes/catalog/schema/folder/
-    # OR use schedule instead of trigger:
-    # schedule:                    # Optional: Scheduled job (cron)
-    #   quartz_cron_expression: "13 2 15 * * ?"
-    #   timezone_id: UTC
-    #   pause_status: UNPAUSED
+    job_clusters:
+      - job_cluster_key: "etl_cluster"
+        new_cluster:
+          spark_version: "16.4.x-scala2.12"
+          node_type_id: "rd-fleet.xlarge"
+          num_workers: 4
     tasks:
-      - task_key: "unique_id"        # Required: Unique task identifier
-        task_type: "sql_query"       # Required: Type of task (see "Task Types and Parameters" section below)
-        depends_on: []               # Optional: List of task_key strings this task depends on (default: [])
-        disabled: false              # Optional: Whether task is disabled (default: false)
-        timeout_seconds: 3600         # Optional: Task-level timeout (default: 3600)
-        run_if: "ALL_SUCCESS"        # Optional: Run condition (see common parameters below)
-        job_cluster_key: "Job_cluster"  # Optional: Reference to job-level cluster definition
-        # OR existing_cluster_id: "1106-160244-2ko4u9ke"  # Optional: Reference to existing all-purpose cluster
-        environment_key: "default_python"  # Optional: Reference to job-level environment
-        warehouse_id: "abc123"       # Required for SQL/dbt tasks: Warehouse ID
-        sql_query: "SELECT * FROM ..."  # For sql_query: Inline SQL query
-        # OR query_id: "abc123"      # For sql_query: Use saved query ID
-        notification_settings:       # Optional: Task-level notification settings
+      - task_key: "extract_data"
+        task_type: "notebook"
+        file_path: "/Workspace/etl/extract_customers"
+        job_cluster_key: "etl_cluster"
+        parameters:
+          source_table: "raw.customers"
+      
+      - task_key: "transform_data"
+        task_type: "sql_query"
+        depends_on: ["extract_data"]
+        warehouse_id: "abc123"
+        sql_query: "SELECT * FROM bronze.customers WHERE updated_date = CURRENT_DATE()"
+      
+      - task_key: "load_data"
+        task_type: "notebook"
+        depends_on: ["transform_data"]
+        file_path: "/Workspace/etl/load_customers"
+        run_if: "ALL_SUCCESS"
+        notification_settings:
           email_notifications:
-            on_start: []
-            on_success: []
-            on_failure: ["alerts@example.com"]
-            on_duration_warning_threshold_exceeded: []
-          alert_on_last_attempt: true
-        parameters:                  # Optional: Task parameters
-          catalog: "my_catalog"
-          schema: "my_schema"
-          start_date: "{{job.start_time.iso_date}}"
+            on_failure: ["data-team@example.com"]
 ```
 
 ### Control Table Schema
@@ -493,74 +630,9 @@ CREATE TABLE jobs_table (
 
 **Note:** `job_name` in the jobs table is the same as `job_name` in the control table. Both refer to the same job name from the YAML `job_name` field.
 
-### Job-Level Settings
-
-Job-level settings control the behavior of the entire Databricks job. These settings are defined directly at the job level (not nested under `job_config`):
-
-- `timeout_seconds`: Maximum time the job can run (default: 7200 seconds)
-- `max_concurrent_runs`: Maximum number of concurrent runs (default: 1)
-- `parameters`: Job-level parameters (key-value pairs) that are automatically pushed down to tasks that support key-value parameters
-- `tags`: Job tags (key-value pairs)
-- `job_clusters`: Job-level cluster definitions (referenced by tasks via `job_cluster_key`)
-- `environments`: Job-level environment definitions (referenced by tasks via `environment_key`)
-- `notification_settings`: Job-level notification settings
-- `queue`: Job queue settings (`enabled: true/false`)
-- `continuous`: Continuous job settings
-  - `pause_status`: `UNPAUSED` or `PAUSED`
-  - `task_retry_mode`: `ON_FAILURE` or `NEVER`
-- `trigger`: Job trigger settings (file arrival, table update, or periodic)
-  - `pause_status`: `UNPAUSED` or `PAUSED`
-  - `file_arrival`: Trigger on file arrival
-    - `url`: Path to monitor (e.g., `/Volumes/catalog/schema/folder/`)
-  - `table_update`: Trigger on table updates
-    - `table_names`: List of table names to monitor (e.g., `["catalog.schema.table"]`)
-  - `periodic`: Periodic trigger
-    - `interval`: Interval number
-    - `unit`: Time unit (`DAYS`, `HOURS`, `MINUTES`, etc.)
-- `schedule`: Scheduled job using cron expression
-  - `quartz_cron_expression`: Cron expression (e.g., `"13 2 15 * * ?"`)
-  - `timezone_id`: Timezone (e.g., `"UTC"`)
-  - `pause_status`: `UNPAUSED` or `PAUSED`
-- `tags`: Job-level tags as key-value pairs (e.g., `{department: "engineering", project: "data_pipeline"}`)
-- `job_clusters`: List of job cluster definitions for shared cluster configurations
-  - Each cluster definition has:
-    - `job_cluster_key`: Key name for the cluster (e.g., `"Job_cluster"`)
-    - `new_cluster`: Full cluster specification (spark_version, node_type_id, num_workers, aws_attributes, custom_tags, etc.)
-- `environments`: List of environment definitions for Python/Scala dependencies
-  - Each environment has:
-    - `environment_key`: Key name for the environment
-    - `spec`: Environment specification (dependencies, java_dependencies, environment_version)
-- `notification_settings`: Job-level notification settings
-  - `email_notifications`: Email notification configuration
-    - `on_start`: List of email addresses to notify when job starts
-    - `on_success`: List of email addresses to notify on success
-    - `on_failure`: List of email addresses to notify on failure
-    - `on_duration_warning_threshold_exceeded`: List of email addresses for duration warnings
-  - `no_alert_for_skipped_runs`: Whether to skip alerts for skipped runs
-  - `no_alert_for_canceled_runs`: Whether to skip alerts for canceled runs
-  - `alert_on_last_attempt`: Whether to alert only on last retry attempt
-
 ## Task Types and Parameters
 
-All task types support these common parameters:
-
-- `task_key`: Required - Unique task identifier
-- `task_type`: Required - Type of task (see supported types below)
-- `depends_on`: Optional - List of task_key strings this task depends on (default: `[]`)
-- `disabled`: Optional - Whether task is disabled (default: `false`)
-- `timeout_seconds`: Optional - Maximum time the task can run (default: 3600 seconds)
-- `run_if`: Optional - Run condition for the task
-  - `ALL_SUCCESS`: Run only if all dependencies succeed
-  - `AT_LEAST_ONE_SUCCESS`: Run if at least one dependency succeeds
-  - `NONE_FAILED`: Run if no dependencies fail
-  - `ALL_DONE`: Run when all dependencies complete (regardless of status)
-  - `AT_LEAST_ONE_FAILED`: Run if at least one dependency fails
-  - `ALL_FAILED`: Run only if all dependencies fail
-- `job_cluster_key`: Optional - Reference to a job-level cluster definition (use with `job_clusters` in `job_config`)
-- `existing_cluster_id`: Optional - Reference to an existing all-purpose cluster in the workspace
-  - Note: Tasks can use either `job_cluster_key` OR `existing_cluster_id`, but not both
-- `environment_key`: Optional - Reference to a job-level environment definition
-- `notification_settings`: Optional - Task-level notification settings (same structure as job-level)
+All task types support the common fields listed in the **Task Configuration** section above (in the Metadata Schema section). Below are the task-type-specific parameters:
 
 #### 1. Notebook Tasks (`task_type: "notebook"`)
 
@@ -677,11 +749,11 @@ All task types support these common parameters:
 
 **Required Parameters:**
 - `commands`: dbt command to execute (e.g., `"dbt run --models my_model"`)
-- `warehouse_id`: SQL warehouse ID (can be provided via `default_warehouse_id` in orchestrator, which is used as default if not specified)
+- `project_directory`: Path to dbt project directory. Optional for Git sourced tasks, in which case if no value is provided, the root of the Git repository is used.
 
 **Optional Parameters:**
-- `profiles_directory`: Path to dbt profiles directory
-- `project_directory`: Path to dbt project directory
+- `profiles_directory`: Relative path to the profiles directory. Can only be specified if no warehouse_id is specified. If no warehouse_id is specified and this folder is unset, the root directory is used.
+- `warehouse_id`: SQL warehouse ID (can be provided via `default_warehouse_id` in orchestrator, which is used as default if not specified)
 - `catalog`: Catalog name for dbt
 - `schema`: Schema name for dbt
 
