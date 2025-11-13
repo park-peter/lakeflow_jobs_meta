@@ -8,6 +8,22 @@ from unittest.mock import MagicMock, patch
 from lakeflow_jobs_meta.metadata_manager import MetadataManager
 
 
+def _create_mock_f():
+    """Create a mock F module that supports comparison operators."""
+    mock_f = MagicMock()
+    mock_column = MagicMock()
+    mock_column.__gt__ = MagicMock(return_value=mock_column)
+    mock_column.__lt__ = MagicMock(return_value=mock_column)
+    mock_column.__ge__ = MagicMock(return_value=mock_column)
+    mock_column.__le__ = MagicMock(return_value=mock_column)
+    mock_column.__eq__ = MagicMock(return_value=mock_column)
+    mock_f.col.return_value = mock_column
+    mock_f.lit.return_value = mock_column
+    mock_f.current_timestamp.return_value = mock_column
+    return mock_f
+
+
+@patch("lakeflow_jobs_meta.metadata_manager.F", _create_mock_f())
 class TestMetadataManager:
     """Tests for MetadataManager class."""
     
@@ -198,21 +214,24 @@ class TestMetadataManager:
         
         # Mock DataFrame with changes
         mock_df = MagicMock()
-        mock_changed_df = MagicMock()
         
         # Mock Row object
         mock_job_row = MagicMock()
-        mock_job_row.__getitem__.side_effect = lambda key: 'job1' if key == 'job_name' else False
-        mock_job_row.asDict.return_value = {'job_name': 'job1', 'disabled': False}
+        mock_job_row.__getitem__.side_effect = lambda key: {
+            'job_name': 'job1',
+            'disabled': False,
+            'created_timestamp': '2024-01-01',
+            'updated_timestamp': '2024-01-02'
+        }.get(key)
+        mock_job_row.get.side_effect = lambda key, default=None: {
+            'job_name': 'job1',
+            'disabled': False
+        }.get(key, default)
         
-        # Mock changed rows
-        mock_changed_df.collect.return_value = [mock_job_row]
-        mock_df.filter.return_value = mock_changed_df
-        
-        # Mock job name selection
-        mock_job_name_row = MagicMock()
-        mock_job_name_row.job_name = 'job1'
-        mock_changed_df.select.return_value.distinct.return_value.collect.return_value = [mock_job_name_row]
+        # Mock changed rows - filter().collect() returns changed rows
+        mock_filtered_df = MagicMock()
+        mock_filtered_df.collect.return_value = [mock_job_row]
+        mock_df.filter.return_value = mock_filtered_df
         
         mock_spark_session.table.return_value = mock_df
         

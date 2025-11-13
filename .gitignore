@@ -45,3 +45,6 @@ Thumbs.db
 # Code Review Reports
 .code_review/
 *.code-workspace
+pre_publish_check.sh
+GITHUB_ACTIONS_SETUP.md
+PUBLISHING.md

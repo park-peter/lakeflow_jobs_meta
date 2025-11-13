@@ -10,6 +10,22 @@ from lakeflow_jobs_meta.orchestrator import JobOrchestrator
 from lakeflow_jobs_meta.metadata_manager import MetadataManager
 
 
+def _create_mock_f():
+    """Create a mock F module that supports comparison operators."""
+    mock_f = MagicMock()
+    mock_column = MagicMock()
+    mock_column.__gt__ = MagicMock(return_value=mock_column)
+    mock_column.__lt__ = MagicMock(return_value=mock_column)
+    mock_column.__ge__ = MagicMock(return_value=mock_column)
+    mock_column.__le__ = MagicMock(return_value=mock_column)
+    mock_column.__eq__ = MagicMock(return_value=mock_column)
+    mock_f.col.return_value = mock_column
+    mock_f.lit.return_value = mock_column
+    mock_f.current_timestamp.return_value = mock_column
+    return mock_f
+
+
+@patch("lakeflow_jobs_meta.orchestrator.F", _create_mock_f())
 @patch("lakeflow_jobs_meta.orchestrator.WorkspaceClient")
 class TestJobOrchestrator:
     """Tests for JobOrchestrator class."""
@@ -99,17 +115,25 @@ class TestJobOrchestrator:
             orchestrator._create_job_tracking_table()
 
     @patch("lakeflow_jobs_meta.orchestrator._get_spark")
-    def test_get_stored_job_id_found(self, mock_get_spark, mock_spark_session):
+    def test_get_stored_job_id_found(self, mock_get_spark, mock_workspace_client_class):
         """Test retrieving existing job ID."""
+        mock_client = MagicMock()
+        mock_workspace_client_class.return_value = mock_client
+
+        mock_spark_session = MagicMock()
         mock_get_spark.return_value = mock_spark_session
 
+        # Create proper mock chain for DataFrame operations
+        mock_row = {"job_id": 12345}
+        mock_collect = MagicMock(return_value=[mock_row])
+        mock_limit = MagicMock()
+        mock_limit.collect = mock_collect
+        mock_select = MagicMock()
+        mock_select.limit.return_value = mock_limit
+        mock_filter = MagicMock()
+        mock_filter.select.return_value = mock_select
         mock_df = MagicMock()
-        mock_df.filter.return_value.select.return_value.limit.return_value.count.return_value = 1
-
-        mock_row = MagicMock()
-        mock_row.__getitem__.return_value = 12345
-        mock_df.filter.return_value.select.return_value.limit.return_value.collect.return_value = [mock_row]
-
+        mock_df.filter.return_value = mock_filter
         mock_spark_session.table.return_value = mock_df
 
         orchestrator = JobOrchestrator(control_table="test_table")
@@ -118,12 +142,24 @@ class TestJobOrchestrator:
         assert result == 12345
 
     @patch("lakeflow_jobs_meta.orchestrator._get_spark")
-    def test_get_stored_job_id_not_found(self, mock_get_spark, mock_spark_session):
+    def test_get_stored_job_id_not_found(self, mock_get_spark, mock_workspace_client_class):
         """Test when job ID doesn't exist."""
+        mock_client = MagicMock()
+        mock_workspace_client_class.return_value = mock_client
+
+        mock_spark_session = MagicMock()
         mock_get_spark.return_value = mock_spark_session
 
+        # Create proper mock chain returning empty list
+        mock_collect = MagicMock(return_value=[])
+        mock_limit = MagicMock()
+        mock_limit.collect = mock_collect
+        mock_select = MagicMock()
+        mock_select.limit.return_value = mock_limit
+        mock_filter = MagicMock()
+        mock_filter.select.return_value = mock_select
         mock_df = MagicMock()
-        mock_df.filter.return_value.select.return_value.limit.return_value.collect.return_value = []
+        mock_df.filter.return_value = mock_filter
         mock_spark_session.table.return_value = mock_df
 
         orchestrator = JobOrchestrator(control_table="test_table")
@@ -132,9 +168,15 @@ class TestJobOrchestrator:
         assert result is None
 
     @patch("lakeflow_jobs_meta.orchestrator._get_spark")
-    def test_get_stored_job_id_error(self, mock_get_spark, mock_spark_session):
+    def test_get_stored_job_id_error(self, mock_get_spark, mock_workspace_client_class):
         """Test error handling during retrieval."""
+        mock_client = MagicMock()
+        mock_workspace_client_class.return_value = mock_client
+
+        mock_spark_session = MagicMock()
         mock_get_spark.return_value = mock_spark_session
+
+        # Raise exception when table() is called
         mock_spark_session.table.side_effect = Exception("Table not found")
 
         orchestrator = JobOrchestrator(control_table="test_table")
@@ -143,28 +185,46 @@ class TestJobOrchestrator:
         # Should return None on error
         assert result is None
 
-    @patch("lakeflow_jobs_meta.orchestrator._get_current_user")
     @patch("lakeflow_jobs_meta.orchestrator._get_spark")
-    def test_store_job_id_success(self, mock_get_spark, mock_get_current_user, mock_spark_session):
+    @patch("lakeflow_jobs_meta.orchestrator._get_current_user")
+    def test_store_job_id_success(self, mock_get_current_user, mock_get_spark, mock_workspace_client_class):
         """Test successful storage of job ID."""
+        mock_client = MagicMock()
+        mock_workspace_client_class.return_value = mock_client
+
+        mock_spark_session = MagicMock()
         mock_get_spark.return_value = mock_spark_session
         mock_get_current_user.return_value = "test_user"
-        mock_spark_session.createDataFrame = MagicMock()
+
+        mock_df = MagicMock()
+        mock_df.withColumn.return_value = mock_df
+        mock_df.createOrReplaceTempView = MagicMock()
+        mock_spark_session.createDataFrame.return_value = mock_df
         mock_spark_session.sql = MagicMock()
 
         orchestrator = JobOrchestrator(control_table="test_table")
         orchestrator._store_job_id("test_job", 12345)
 
-        # Verify MERGE SQL was called
+        # Verify operations were called
+        assert mock_spark_session.createDataFrame.called
         assert mock_spark_session.sql.called
 
-    @patch("lakeflow_jobs_meta.orchestrator._get_current_user")
     @patch("lakeflow_jobs_meta.orchestrator._get_spark")
-    def test_store_job_id_error(self, mock_get_spark, mock_get_current_user, mock_spark_session):
+    @patch("lakeflow_jobs_meta.orchestrator._get_current_user")
+    def test_store_job_id_error(self, mock_get_current_user, mock_get_spark, mock_workspace_client_class):
         """Test error handling during storage."""
+        mock_client = MagicMock()
+        mock_workspace_client_class.return_value = mock_client
+
+        mock_spark_session = MagicMock()
         mock_get_spark.return_value = mock_spark_session
         mock_get_current_user.return_value = "test_user"
-        mock_spark_session.createDataFrame = MagicMock()
+
+        # Mock createDataFrame to succeed, but sql to fail
+        mock_df = MagicMock()
+        mock_df.withColumn.return_value = mock_df
+        mock_df.createOrReplaceTempView = MagicMock()
+        mock_spark_session.createDataFrame.return_value = mock_df
         mock_spark_session.sql.side_effect = Exception("Storage error")
 
         orchestrator = JobOrchestrator(control_table="test_table")
@@ -172,10 +232,14 @@ class TestJobOrchestrator:
         with pytest.raises(RuntimeError, match="Failed to store job_id"):
             orchestrator._store_job_id("test_job", 12345)
 
-    @patch("lakeflow_jobs_meta.orchestrator.create_task_from_config")
     @patch("lakeflow_jobs_meta.orchestrator._get_spark")
-    def test_generate_tasks_for_job(self, mock_get_spark, mock_create_task, mock_spark_session):
+    @patch("lakeflow_jobs_meta.orchestrator.create_task_from_config")
+    def test_generate_tasks_for_job(self, mock_create_task, mock_get_spark, mock_workspace_client_class):
         """Test generating tasks for a job."""
+        mock_client = MagicMock()
+        mock_workspace_client_class.return_value = mock_client
+
+        mock_spark_session = MagicMock()
         mock_get_spark.return_value = mock_spark_session
 
         # Mock task row with proper data
@@ -191,8 +255,12 @@ class TestJobOrchestrator:
         mock_task.asDict.return_value = task_data
         mock_task.__getitem__.side_effect = lambda key: task_data.get(key)
 
+        # Properly mock the DataFrame chain
+        mock_collect = MagicMock(return_value=[mock_task])
+        mock_filter = MagicMock()
+        mock_filter.collect = mock_collect
         mock_df = MagicMock()
-        mock_df.filter.return_value.collect.return_value = [mock_task]
+        mock_df.filter.return_value = mock_filter
         mock_spark_session.table.return_value = mock_df
 
         mock_create_task.return_value = {"task_key": "task1", "task_type": "notebook"}
@@ -204,12 +272,20 @@ class TestJobOrchestrator:
         assert tasks[0]["task_key"] == "task1"
 
     @patch("lakeflow_jobs_meta.orchestrator._get_spark")
-    def test_generate_tasks_no_tasks(self, mock_get_spark, mock_spark_session):
+    def test_generate_tasks_no_tasks(self, mock_get_spark, mock_workspace_client_class):
         """Test error when no tasks found."""
+        mock_client = MagicMock()
+        mock_workspace_client_class.return_value = mock_client
+
+        mock_spark_session = MagicMock()
         mock_get_spark.return_value = mock_spark_session
 
+        # Return empty list for collect()
+        mock_collect = MagicMock(return_value=[])
+        mock_filter = MagicMock()
+        mock_filter.collect = mock_collect
         mock_df = MagicMock()
-        mock_df.filter.return_value.collect.return_value = []
+        mock_df.filter.return_value = mock_filter
         mock_spark_session.table.return_value = mock_df
 
         orchestrator = JobOrchestrator(control_table="test_table")

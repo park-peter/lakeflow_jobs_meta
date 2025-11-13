@@ -10,19 +10,26 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "Peter Park", email = "peter.park@databricks.com"}
 ]
+keywords = ["databricks", "jobs", "orchestration", "metadata", "workflow", "etl", "data-engineering"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Database",
 ]
 dependencies = [
-    "databricks-sdk>=0.1.0",
+    "databricks-sdk>=0.65.0",
     "pyspark>=3.5.0",
     "pyyaml>=6.0",
 ]
@@ -39,7 +46,8 @@ dev = [
 lakeflow-jobs-meta = "lakeflow_jobs_meta.main:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/lakeflow-jobs-meta"
-Documentation = "https://github.com/yourusername/lakeflow-jobs-meta/docs"
-Repository = "https://github.com/yourusername/lakeflow-jobs-meta"
+Homepage = "https://github.com/park-peter/lakeflow-jobs-meta"
+Documentation = "https://github.com/park-peter/lakeflow-jobs-meta/blob/main/README.md"
+Repository = "https://github.com/park-peter/lakeflow-jobs-meta"
+Issues = "https://github.com/park-peter/lakeflow-jobs-meta/issues"
 

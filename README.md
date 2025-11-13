@@ -1,5 +1,11 @@
 # Lakeflow Jobs Meta
 
+[![Tests](https://github.com/park-peter/lakeflow-jobs-meta/workflows/Tests/badge.svg)](https://github.com/park-peter/lakeflow-jobs-meta/actions)
+[![Lint](https://github.com/park-peter/lakeflow-jobs-meta/workflows/Lint/badge.svg)](https://github.com/park-peter/lakeflow-jobs-meta/actions)
+[![PyPI](https://img.shields.io/pypi/v/lakeflow-jobs-meta)](https://pypi.org/project/lakeflow-jobs-meta/)
+[![Python](https://img.shields.io/pypi/pyversions/lakeflow-jobs-meta)](https://pypi.org/project/lakeflow-jobs-meta/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 A metadata-driven framework for orchestrating Databricks Lakeflow Jobs. Package as a library and run as a single task in a Lakeflow Jobs to continuously monitor for metadata changes and automatically update jobs.
 
 ## Features
