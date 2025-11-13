@@ -18,7 +18,7 @@ jobs:
     queue:
       enabled: true
     continuous:
-      pause_status: UNPAUSED
+      # pause_status: UNPAUSED  # testing default_pause_status
       task_retry_mode: ON_FAILURE
     tasks:
       - task_key: "simple_quality_check"
@@ -45,7 +45,7 @@ jobs:
         file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_jobs_meta/examples/sql_file_task/01_create_sample_data.sql"
         parameters:
           catalog: "fe_ppark_demo"
-          schema: "lakeflow_job_metadata"
+          schema: "lakeflow_jobs_metadata"
       
       - task_key: "transform_to_silver"
         task_type: "sql_file"
@@ -53,7 +53,7 @@ jobs:
         file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_jobs_meta/examples/sql_file_task/03_bronze_to_silver_transformation.sql"
         parameters:
           catalog: "fe_ppark_demo"
-          schema: "lakeflow_job_metadata"
+          schema: "lakeflow_jobs_metadata"
       
       - task_key: "daily_aggregations"
         task_type: "sql_file"
@@ -61,7 +61,7 @@ jobs:
         file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_jobs_meta/examples/sql_file_task/02_daily_aggregations.sql"
         parameters:
           catalog: "fe_ppark_demo"
-          schema: "lakeflow_job_metadata"
+          schema: "lakeflow_jobs_metadata"
 
   # Example 3: Mixed Task Types
   - job_name: "ingestion_and_validation"
@@ -72,7 +72,7 @@ jobs:
         file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_jobs_meta/examples/notebook_task/sample_ingestion_notebook"
         parameters:
           catalog: "fe_ppark_demo"
-          schema: "lakeflow_job_metadata"
+          schema: "lakeflow_jobs_metadata"
           source_table: "source_customers"
           target_table: "customers"
           write_mode: "append"
@@ -106,7 +106,7 @@ jobs:
         file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_jobs_meta/examples/sql_file_task/04_data_freshness_check.sql"
         parameters:
           catalog: "fe_ppark_demo"
-          schema: "lakeflow_job_metadata"
+          schema: "lakeflow_jobs_metadata"
           max_hours: "24"
 
   # Example 6: Job with Tags, Job Clusters, and Task with run_if
@@ -152,7 +152,7 @@ jobs:
         existing_cluster_id: "1106-160244-2ko4u9ke"
         parameters:
           catalog: "fe_ppark_demo"
-          schema: "lakeflow_job_metadata"
+          schema: "lakeflow_jobs_metadata"
       
       - task_key: "task_with_job_cluster"
         task_type: "notebook"
@@ -198,7 +198,7 @@ jobs:
         warehouse_id: "4b9b953939869799"
         project_directory: "/Workspace/Users/peter.park@databricks.com/dbt-project"
         catalog: "fe_ppark_demo"
-        schema: "lakeflow_job_metadata"
+        schema: "lakeflow_jobs_metadata"
         environment_key: "default_dbt"
 
   # Example 9: Job with Editable UI Mode
