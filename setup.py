@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="lakeflow-jobs-meta",
-    version="0.1.1rc3",
+    version="0.1.1",
     author="Peter Park",
     author_email="peter.park@databricks.com",
     description="Metadata-driven framework for orchestrating Databricks Lakeflow Jobs",
