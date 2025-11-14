@@ -840,4 +840,6 @@ See `examples/metadata_examples.yaml` for comprehensive examples including:
 
 ## Contributing
 
-This is an internal project. For questions or enhancements, contact Peter Park (peter.park@databricks.com).
+Contributions are welcome! Please open an issue or submit a pull request on the [GitHub repository](https://github.com/yourusername/lakeflow-jobs-meta).
+
+For questions, bug reports, or feature requests, please [open an issue](https://github.com/yourusername/lakeflow-jobs-meta/issues).

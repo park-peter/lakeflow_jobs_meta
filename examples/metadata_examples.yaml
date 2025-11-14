@@ -1,6 +1,13 @@
 # Example Metadata Configurations for Lakeflow Jobs Meta Framework
 # This file demonstrates different task types and use cases
 #
+# ⚠️  IMPORTANT: Update these examples for your environment!
+#     - Replace workspace paths (/Workspace/Users/...) with your own paths
+#     - Replace catalog names (fe_ppark_demo) with your catalog
+#     - Replace cluster IDs with your cluster IDs
+#     - Replace warehouse IDs with your warehouse IDs
+#     - Update email addresses in notification settings
+#
 # Job-Level Settings (optional):
 #   - edit_mode: "UI_LOCKED" (default) or "EDITABLE"
 #     Controls whether jobs can be edited in Databricks UI
