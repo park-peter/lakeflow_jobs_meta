@@ -11,6 +11,8 @@ A metadata-driven framework for orchestrating Databricks Lakeflow Jobs. Package 
 ## Features
 
 - ✅ **Dynamic Job Generation**: Automatically creates/updates Databricks jobs from metadata
+- ✅ **Variable Substitution**: Use `${var.name}` syntax for dynamic YAML templates
+- ✅ **Resource ID Tracking**: Stable job tracking independent of job name changes
 - ✅ **Continuous Monitoring**: Automatically detects metadata changes and updates jobs
 - ✅ **Multiple Task Types**: Support for Notebook, SQL Query, SQL File, Python Wheel, Spark JAR, Pipeline, and dbt tasks
 - ✅ **Advanced Task Features**: Support for run_if conditions, job clusters, environments, and notifications
@@ -89,7 +91,7 @@ pip install lakeflow-jobs-meta
 pip install -e .
 
 # Or install from wheel
-pip install dist/lakeflow_jobs_meta-0.1.0-py3-none-any.whl
+pip install dist/lakeflow_jobs_meta-0.2.0-py3-none-any.whl
 ```
 
 ### Quick Example
@@ -97,21 +99,81 @@ pip install dist/lakeflow_jobs_meta-0.1.0-py3-none-any.whl
 ```python
 import lakeflow_jobs_meta as jm
 
-# Load metadata from YAML file and create/update those jobs
+# Example 1: Load metadata from YAML with variables
+vars = {
+    'env': 'prod',
+    'warehouse_id': 'abc123',
+    'catalog': 'bronze'
+}
+
 jobs = jm.create_or_update_jobs(
     yaml_path="/Workspace/path/to/metadata.yaml",
-    control_table="catalog.schema.etl_control"
+    control_table="catalog.schema.etl_control",
+    var=vars
 )
 
-# Or load from a folder (all YAML files)
+# Example 2: Load from folder (all YAML files)
 jobs = jm.create_or_update_jobs(
     yaml_path="/Workspace/path/to/metadata/",
     control_table="catalog.schema.etl_control"
 )
 
-# Or create/update all jobs in control table
+# Example 3: Create/update all jobs in control table
 jobs = jm.create_or_update_jobs(
     control_table="catalog.schema.etl_control"
+)
+```
+
+### YAML Format
+
+Jobs are defined as dictionary entries with resource IDs as keys:
+
+```yaml
+jobs:
+  # resource_id is the YAML dict key
+  customer_etl_pipeline:
+    name: "Customer ETL - Production"  # Optional: Databricks job name (defaults to resource_id)
+    description: "Daily customer data pipeline"
+    schedule:
+      quartz_cron_expression: "0 0 2 * * ?"
+      timezone_id: "UTC"
+    tasks:
+      - task_key: "extract_customers"
+        task_type: "sql_query"
+        warehouse_id: "abc123"
+        sql_query: "SELECT * FROM bronze.raw.customers"
+```
+
+### Variable Substitution
+
+Use `${var.name}` syntax for dynamic values:
+
+```yaml
+jobs:
+  etl_${var.env}_${var.source}:
+    name: "ETL Pipeline - ${var.source} (${var.env})"
+    tasks:
+      - task_key: "extract_${var.source}"
+        task_type: "sql_query"
+        warehouse_id: "${var.warehouse_id}"
+        sql_query: "SELECT * FROM ${var.catalog}.${var.schema}.${var.source}"
+```
+
+Pass variables when loading:
+
+```python
+vars = {
+    'env': 'prod',
+    'source': 'customers',
+    'warehouse_id': 'abc123',
+    'catalog': 'bronze',
+    'schema': 'raw'
+}
+
+jobs = jm.create_or_update_jobs(
+    yaml_path="/path/to/template.yaml",
+    control_table="catalog.schema.control",
+    var=vars
 )
 ```
 
@@ -264,7 +326,8 @@ The `pause_status` is set **within** the `continuous`, `schedule`, or `trigger` 
 
 ```yaml
 jobs:
-  - job_name: "scheduled_job"
+  scheduled_job:
+    name: "Scheduled Job"
     continuous:
       pause_status: UNPAUSED  # Explicit - overrides default_pause_status
       task_retry_mode: ON_FAILURE
@@ -272,7 +335,8 @@ jobs:
       - task_key: "my_task"
         # ...
   
-  - job_name: "cron_job"
+  cron_job:
+    name: "Cron Job"
     schedule:
       quartz_cron_expression: "0 0 2 * * ?"
       timezone_id: "America/Los_Angeles"
@@ -309,7 +373,8 @@ If you need to allow UI editing for specific jobs, you can set `edit_mode: EDITA
 
 ```yaml
 jobs:
-  - job_name: "experimental_job"
+  experimental_job:
+    name: "Experimental Job"
     edit_mode: EDITABLE  # Allow UI editing for this job
     tasks:
       - task_key: "my_task"
@@ -359,6 +424,22 @@ All tests use pytest with mocking for external dependencies (Databricks SDK, Spa
 
 ## Metadata Schema
 
+### YAML Structure
+
+Jobs are defined as a dictionary where each key is a unique `resource_id`:
+
+```yaml
+jobs:
+  <resource_id>:        # Unique stable identifier (e.g., customer_etl_pipeline)
+    name: <string>      # Optional: Databricks job display name (defaults to resource_id)
+    description: <string>
+    # ... other job-level configuration
+    tasks:
+      - task_key: <string>
+        task_type: <string>
+        # ... task configuration
+```
+
 ### Job-Level Configuration
 
 Each job in your YAML is defined with the following structure:
@@ -367,13 +448,14 @@ Each job in your YAML is defined with the following structure:
 
 | Parameter | Type | Description | Example |
 |-----------|------|-------------|---------|
-| `job_name` | String | Unique identifier for the job | `"my_pipeline"` |
+| `resource_id` | String (YAML key) | Unique identifier for the job | `customer_etl_pipeline` |
 | `tasks` | List | List of task definitions (see Task Configuration below) | See Task Configuration |
 
 #### Optional Fields
 
 | Parameter | Type | Default | Description | Possible Values |
 |-----------|------|---------|-------------|-----------------|
+| `name` | String | `resource_id` | Databricks job display name | Any string |
 | `description` | String | None | Human-readable description of the job | Any string |
 | `timeout_seconds` | Integer | `7200` | Maximum time the entire job can run (seconds) | Any positive integer |
 | `max_concurrent_runs` | Integer | `1` | Maximum number of concurrent runs allowed | Any positive integer |
@@ -555,7 +637,8 @@ The `run_if` parameter controls when a task executes based on dependency outcome
 
 ```yaml
 jobs:
-  - job_name: "etl_pipeline"
+  customer_etl_pipeline:
+    name: "Customer ETL Pipeline - Production"
     description: "Daily ETL pipeline for customer data"
     timeout_seconds: 7200
     max_concurrent_runs: 1
@@ -601,12 +684,13 @@ jobs:
 
 ### Control Table Schema
 
-The control table has the following schema:
+The control table stores job and task metadata with the following schema:
 
 ```sql
 CREATE TABLE control_table (
-    job_name STRING,              -- Job name (from job_name in YAML)
-    task_key STRING,              -- Unique task identifier
+    resource_id STRING,           -- Stable tracking identifier (YAML dict key)
+    job_name STRING,              -- Databricks job display name (from 'name' field or defaults to resource_id)
+    task_key STRING,              -- Unique task identifier within the job
     depends_on STRING,            -- JSON array of task_key strings this task depends on
     task_type STRING,             -- Task type: notebook, sql_query, sql_file, python_wheel, spark_jar, pipeline, or dbt
     job_config STRING,            -- JSON string with job-level settings (tags, parameters, timeout_seconds, etc.)
@@ -619,22 +703,25 @@ CREATE TABLE control_table (
 )
 ```
 
+**Key Concepts**:
+- **`resource_id`**: The stable tracking identifier defined as the YAML dictionary key. This never changes and is used to track job history in the control table.
+- **`job_name`**: The display name shown in Databricks. Defaults to `resource_id` if the `name` field is not specified. Can be changed via the `name` field without losing job history.
+
 ### Jobs Table Schema
 
-The jobs tracking table has the following schema:
+The jobs tracking table maintains the mapping between resource IDs and Databricks job IDs:
 
 ```sql
 CREATE TABLE jobs_table (
-    job_name STRING,              -- Job name (same as job_name in control table)
+    resource_id STRING,           -- Stable tracking identifier (same as control table)
     job_id BIGINT,                -- Databricks job ID
+    job_name STRING,              -- Databricks job display name (for reference)
     created_by STRING,            -- Username who created the record
     created_timestamp TIMESTAMP DEFAULT current_timestamp(),
     updated_by STRING,            -- Username who last updated the record
     updated_timestamp TIMESTAMP DEFAULT current_timestamp()
 )
 ```
-
-**Note:** `job_name` in the jobs table is the same as `job_name` in the control table. Both refer to the same job name from the YAML `job_name` field.
 
 ## Task Types and Parameters
 

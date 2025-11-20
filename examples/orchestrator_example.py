@@ -68,6 +68,11 @@ DEFAULT_QUERIES_PATH = dbutils.widgets.get("default_queries_path") or None
 if not CONTROL_TABLE:
     raise ValueError("control_table widget is required. Please set it in the widget or via base_parameters.")
 
+# COMMAND ----------
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
 logger.info(f"Configuration:")
 logger.info(f"  Control Table: {CONTROL_TABLE}")
 logger.info(f"  YAML Path: {YAML_PATH or 'Not configured (will process all jobs in control table)'}")
@@ -94,13 +99,15 @@ logger.info(f"  Default Queries Path: {DEFAULT_QUERIES_PATH or 'Not configured'}
 # If yaml_path is provided: Loads metadata and processes ONLY those jobs
 # If yaml_path is NOT provided: Processes ALL jobs in control table
 # Supports YAML files, folders (recursive), and Unity Catalog volumes
+vars = {"env": "prod", "source": "customers", "warehouse_id": "abc123", "catalog": "bronze", "schema": "raw"}
 
 jobs = jm.create_or_update_jobs(
     yaml_path=YAML_PATH,  # Automatically detects YAML file, folder, or volume
-    default_pause_status=False,  # False = new manual jobs auto-run, scheduled jobs active; True = no auto-run, scheduled jobs paused
+    default_pause_status=True,  # False = new manual jobs auto-run, scheduled jobs active; True = no auto-run, scheduled jobs paused
     control_table=CONTROL_TABLE,
     default_warehouse_id=DEFAULT_WAREHOUSE_ID,
     default_queries_path=DEFAULT_QUERIES_PATH,
+    var=vars,
 )
 
 logger.info(f"✅ Managed {len(jobs)} jobs successfully")

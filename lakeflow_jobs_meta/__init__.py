@@ -5,7 +5,7 @@ A library for orchestrating Databricks Jobs from metadata stored in Delta tables
 or YAML files.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from typing import Optional, List, Dict, Any
 from lakeflow_jobs_meta.orchestrator import JobOrchestrator
@@ -25,9 +25,8 @@ __all__ = [
 
 
 def create_or_update_job(
-    job_name: str,
+    resource_id: str,
     control_table: Optional[str] = None,
-    cluster_id: Optional[str] = None,
     default_warehouse_id: Optional[str] = None,
     jobs_table: Optional[str] = None,
     workspace_client: Optional[Any] = None,
@@ -36,10 +35,9 @@ def create_or_update_job(
     """Convenience function to create or update a single job.
 
     Args:
-        job_name: Name of the job to create or update
+        resource_id: Resource ID of the job (YAML dict key)
         control_table: Name of the control table (defaults to
             "main.default.job_metadata_control_table")
-        cluster_id: Optional cluster ID to use for tasks
         default_warehouse_id: Optional default SQL warehouse ID for SQL tasks
         jobs_table: Optional custom name for the jobs tracking table
         workspace_client: Optional WorkspaceClient instance
@@ -67,13 +65,14 @@ def create_or_update_job(
         default_warehouse_id=default_warehouse_id,
         default_queries_path=default_queries_path,
     )
-    return orchestrator.create_or_update_job(job_name, cluster_id=cluster_id)
+    return orchestrator.create_or_update_job(resource_id)
 
 
 def create_or_update_jobs(
     control_table: Optional[str] = None,
     default_pause_status: bool = False,
     yaml_path: Optional[str] = None,
+    var: Optional[Dict[str, Any]] = None,
     default_warehouse_id: Optional[str] = None,
     jobs_table: Optional[str] = None,
     workspace_client: Optional[Any] = None,
@@ -100,6 +99,7 @@ def create_or_update_jobs(
             - Path to a Unity Catalog volume (e.g., "/Volumes/catalog/schema/volume")
             If provided: Only jobs from the yaml_path are processed.
             If not provided: All jobs in control table are processed.
+        var: Optional dictionary of variables for ${var.name} substitution in YAML templates
         default_warehouse_id: Optional default SQL warehouse ID for SQL tasks
         jobs_table: Optional custom name for the jobs tracking table
         workspace_client: Optional WorkspaceClient instance
@@ -107,15 +107,21 @@ def create_or_update_jobs(
             will be saved (e.g., "/Workspace/Shared/LakeflowQueriesMeta")
 
     Returns:
-        List of dictionaries with job names and job IDs
+        List of dictionaries with resource_ids, job names and job IDs
 
     Example:
         ```python
         import lakeflow_jobs_meta as jm
 
-        # Load from YAML file and create only those jobs
+        # Load from YAML file with variables and create jobs
+        vars = {
+            'env': 'prod',
+            'warehouse_id': 'abc123',
+            'catalog': 'bronze'
+        }
         jobs = jm.create_or_update_jobs(
-            yaml_path="/Workspace/metadata/jobs.yaml",
+            yaml_path="/Workspace/metadata/template.yaml",
+            var=vars,
             default_pause_status=True
         )
 
@@ -142,15 +148,14 @@ def create_or_update_jobs(
         default_warehouse_id=default_warehouse_id,
         default_queries_path=default_queries_path,
     )
-    return orchestrator.create_or_update_jobs(
-        default_pause_status=default_pause_status, yaml_path=yaml_path
-    )
+    return orchestrator.create_or_update_jobs(default_pause_status=default_pause_status, yaml_path=yaml_path, var=var)
 
 
 def load_yaml(
     yaml_path: str,
     control_table: Optional[str] = None,
     validate_file_exists: bool = True,
+    var: Optional[Dict[str, Any]] = None,
 ) -> tuple:
     """Convenience function to load YAML metadata file into control table.
 
@@ -159,30 +164,35 @@ def load_yaml(
         control_table: Name of the control table (defaults to
             "main.default.job_metadata_control_table")
         validate_file_exists: Whether to check if file exists before loading
+        var: Optional dictionary of variables for ${var.name} substitution in YAML templates
 
     Returns:
-        Tuple of (num_tasks_loaded, job_names_loaded)
+        Tuple of (num_tasks_loaded, resource_ids_loaded)
         - num_tasks_loaded: Number of tasks loaded
-        - job_names_loaded: List of job names that were loaded
+        - resource_ids_loaded: List of resource IDs that were loaded
 
     Example:
         ```python
         import lakeflow_jobs_meta as jm
 
-        num_tasks, job_names = jm.load_yaml(
-            "./examples/metadata_examples.yaml",
-            control_table="catalog.schema.etl_control"
+        # Load YAML with variables
+        vars = {'env': 'prod', 'catalog': 'bronze'}
+        num_tasks, resource_ids = jm.load_yaml(
+            "./examples/template.yaml",
+            control_table="catalog.schema.etl_control",
+            var=vars
         )
-        print(f"Loaded {num_tasks} tasks for jobs: {', '.join(job_names)}")
+        print(f"Loaded {num_tasks} tasks for jobs: {', '.join(resource_ids)}")
         ```
     """
     manager = MetadataManager(control_table or "main.default.job_metadata_control_table")
-    return manager.load_yaml(yaml_path, validate_file_exists=validate_file_exists)
+    return manager.load_yaml(yaml_path, validate_file_exists=validate_file_exists, var=var)
 
 
 def load_from_folder(
     folder_path: str,
     control_table: Optional[str] = None,
+    var: Optional[Dict[str, Any]] = None,
 ) -> tuple:
     """Convenience function to load all YAML files from a workspace folder.
 
@@ -191,30 +201,34 @@ def load_from_folder(
             (e.g., '/Workspace/Users/user@example.com/metadata/')
         control_table: Name of the control table (defaults to
             "main.default.job_metadata_control_table")
+        var: Optional dictionary of variables for ${var.name} substitution
 
     Returns:
-        Tuple of (total_tasks_loaded, job_names_loaded)
+        Tuple of (total_tasks_loaded, resource_ids_loaded)
         - total_tasks_loaded: Total number of tasks loaded across all YAML files
-        - job_names_loaded: List of unique job names that were loaded
+        - resource_ids_loaded: List of unique resource IDs that were loaded
 
     Example:
         ```python
         import lakeflow_jobs_meta as jm
 
-        num_tasks, job_names = jm.load_from_folder(
+        vars = {'env': 'prod', 'catalog': 'bronze'}
+        num_tasks, resource_ids = jm.load_from_folder(
             "/Workspace/Users/user@example.com/metadata/",
-            control_table="catalog.schema.etl_control"
+            control_table="catalog.schema.etl_control",
+            var=vars
         )
-        print(f"Loaded {num_tasks} tasks for jobs: {', '.join(job_names)}")
+        print(f"Loaded {num_tasks} tasks for jobs: {', '.join(resource_ids)}")
         ```
     """
     manager = MetadataManager(control_table or "main.default.job_metadata_control_table")
-    return manager.load_from_folder(folder_path)
+    return manager.load_from_folder(folder_path, var=var)
 
 
 def sync_from_volume(
     volume_path: str,
     control_table: Optional[str] = None,
+    var: Optional[Dict[str, Any]] = None,
 ) -> tuple:
     """Convenience function to sync all YAML files from Unity Catalog volume.
 
@@ -223,22 +237,25 @@ def sync_from_volume(
             (e.g., '/Volumes/catalog/schema/volume')
         control_table: Name of the control table (defaults to
             "main.default.job_metadata_control_table")
+        var: Optional dictionary of variables for ${var.name} substitution
 
     Returns:
-        Tuple of (total_tasks_loaded, job_names_loaded)
+        Tuple of (total_tasks_loaded, resource_ids_loaded)
         - total_tasks_loaded: Total number of tasks loaded across all YAML files
-        - job_names_loaded: List of unique job names that were loaded
+        - resource_ids_loaded: List of unique resource IDs that were loaded
 
     Example:
         ```python
         import lakeflow_jobs_meta as jm
 
-        num_tasks, job_names = jm.sync_from_volume(
+        vars = {'env': 'prod', 'warehouse_id': 'abc123'}
+        num_tasks, resource_ids = jm.sync_from_volume(
             "/Volumes/catalog/schema/metadata_volume",
-            control_table="catalog.schema.etl_control"
+            control_table="catalog.schema.etl_control",
+            var=vars
         )
-        print(f"Loaded {num_tasks} tasks for jobs: {', '.join(job_names)}")
+        print(f"Loaded {num_tasks} tasks for jobs: {', '.join(resource_ids)}")
         ```
     """
     manager = MetadataManager(control_table or "main.default.job_metadata_control_table")
-    return manager.sync_from_volume(volume_path)
+    return manager.sync_from_volume(volume_path, var=var)

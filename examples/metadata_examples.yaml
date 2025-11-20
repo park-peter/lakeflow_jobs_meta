@@ -1,4 +1,4 @@
-# Example Metadata Configurations for Lakeflow Jobs Meta Framework
+# Example Metadata Configurations for Lakeflow Jobs Meta Framework v0.2.0
 # This file demonstrates different task types and use cases
 #
 # ⚠️  IMPORTANT: Update these examples for your environment!
@@ -8,17 +8,22 @@
 #     - Replace warehouse IDs with your warehouse IDs
 #     - Update email addresses in notification settings
 #
+# New in v0.2.0:
+#   - Dict-based YAML format: jobs are now dict keys (resource_ids)
+#   - Optional 'name' field: if provided, used as Databricks job name; otherwise resource_id is used
+#   - Variable substitution: use ${var.variable_name} for dynamic values
+#
 # Job-Level Settings (optional):
 #   - edit_mode: "UI_LOCKED" (default) or "EDITABLE"
 #     Controls whether jobs can be edited in Databricks UI
 #     UI_LOCKED: Recommended for production (prevents accidental edits)
 #     EDITABLE: Allows UI editing (useful for experimental jobs)
 
-metadata_version: "1.0"
+metadata_version: "2.0"
 
 jobs:
   # Example 1: SQL Query Task with Job-Level and Task-Level Settings
-  - job_name: "data_quality_checks"
+  data_quality_checks:
     description: "Simple data quality validation using inline SQL query (no table dependencies)"
     timeout_seconds: 7200
     max_concurrent_runs: 1
@@ -44,14 +49,14 @@ jobs:
             'Example validation check' as description
 
   # Example 2: SQL File Tasks
-  - job_name: "sales_pipeline"
+  sales_pipeline:
     description: "Create sample data, then transform and aggregate using SQL files"
     tasks:
       - task_key: "create_sample_data"
         task_type: "sql_file"
         file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_jobs_meta/examples/sql_file_task/01_create_sample_data.sql"
         parameters:
-          catalog: "fe_ppark_demo"
+          catalog: "${var.catalog}"
           schema: "lakeflow_jobs_metadata"
       
       - task_key: "transform_to_silver"
@@ -59,7 +64,7 @@ jobs:
         depends_on: ["create_sample_data"]
         file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_jobs_meta/examples/sql_file_task/03_bronze_to_silver_transformation.sql"
         parameters:
-          catalog: "fe_ppark_demo"
+          catalog: "${var.catalog}"
           schema: "lakeflow_jobs_metadata"
       
       - task_key: "daily_aggregations"
@@ -67,18 +72,18 @@ jobs:
         depends_on: ["transform_to_silver"]
         file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_jobs_meta/examples/sql_file_task/02_daily_aggregations.sql"
         parameters:
-          catalog: "fe_ppark_demo"
+          catalog: "${var.catalog}"
           schema: "lakeflow_jobs_metadata"
 
   # Example 3: Mixed Task Types
-  - job_name: "ingestion_and_validation"
+  ingestion_and_validation:
     description: "Ingest data via notebook, then validate with SQL"
     tasks:
       - task_key: "delta_table_ingestion"
         task_type: "notebook"
         file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_jobs_meta/examples/notebook_task/sample_ingestion_notebook"
         parameters:
-          catalog: "fe_ppark_demo"
+          catalog: "${var.catalog}"
           schema: "lakeflow_jobs_metadata"
           source_table: "source_customers"
           target_table: "customers"
@@ -94,35 +99,55 @@ jobs:
             'SUCCESS' as status,
             'Ingestion completed successfully' as message
 
-  # Example 4: SQL Tasks with Saved Queries
-  - job_name: "reporting_queries"
+  # Example 4: Using 'name' field (resource_id != job_name)
+  reporting_pipeline:
+    name: "Daily Reporting Queries"  # This will be the job name in Databricks
     description: "Use pre-saved SQL queries from Databricks SQL"
     tasks:
-      - task_key: "daily_sales_report"
+      - task_key: "revenue_report"
         task_type: "sql_query"
         query_id: "911c517b-d93e-4ab1-b065-ce361df23f8b"
         parameters:
           threshold: "5.0"
 
-  # Example 5: SQL File Task - Data Freshness Monitoring
-  - job_name: "data_freshness_monitoring"
-    description: "Monitor data freshness across multiple tables using SQL file task"
+  # Example 5: Scheduled Job
+  daily_etl:
+    description: "Daily ETL pipeline with schedule"
+    schedule:
+      quartz_cron_expression: "0 0 2 * * ?"  # Daily at 2 AM
+      timezone_id: "America/Los_Angeles"
+      pause_status: UNPAUSED
     tasks:
-      - task_key: "check_data_freshness"
-        task_type: "sql_file"
-        file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_jobs_meta/examples/sql_file_task/04_data_freshness_check.sql"
-        parameters:
-          catalog: "fe_ppark_demo"
-          schema: "lakeflow_jobs_metadata"
-          max_hours: "24"
+      - task_key: "extract_data"
+        task_type: "notebook"
+        file_path: "/Workspace/Users/peter.park@databricks.com/notebooks/extract"
 
-  # Example 6: Job with Tags, Job Clusters, and Task with run_if
-  - job_name: "advanced_job_example"
-    description: "Demonstrates tags, job clusters, run_if, and notifications"
+  # Example 6: Job with File Arrival Trigger
+  file_arrival_job:
+    description: "Process files as they arrive"
+    trigger:
+      pause_status: UNPAUSED
+      file_arrival:
+        url: "/Volumes/fe_ppark_demo/lakeflow_jobs_metadata/incoming/"
+    tasks:
+      - task_key: "process_file"
+        task_type: "notebook"
+        file_path: "/Workspace/Users/peter.park@databricks.com/notebooks/process"
+
+  # Example 7: Advanced Job with Multiple Features
+  advanced_job_example:
+    name: "Advanced Multi-Task Pipeline"
+    description: "Comprehensive example with job clusters, environments, and notifications"
+    parameters:
+      - default: "${var.catalog}"
+        name: "default_catalog"
+      - default: "lakeflow_jobs_metadata"
+        name: "default_schema"
     tags:
       department: "engineering"
-      project: "data_pipeline"
-      environment: "production"
+      project: "lakeflow_demo"
+    
+    # Job-level clusters
     job_clusters:
       - job_cluster_key: "Job_cluster_aws"
         new_cluster:
@@ -130,163 +155,62 @@ jobs:
           node_type_id: "rd-fleet.xlarge"
           num_workers: 8
           aws_attributes:
-            first_on_demand: 1
             availability: SPOT_WITH_FALLBACK
-            zone_id: us-west-2a
-            spot_bid_price_percent: 100
-            ebs_volume_count: 0
-          spark_env_vars:
-            PYSPARK_PYTHON: /databricks/python3/bin/python3
-          enable_elastic_disk: false
+            ebs_volume_type: GENERAL_PURPOSE_SSD
+            ebs_volume_count: 1
+            ebs_volume_size: 100
           data_security_mode: SINGLE_USER
           runtime_engine: PHOTON
-          custom_tags:
-            team: "data-engineering"
-            cost-center: "engineering"
-      # - job_cluster_key: "Job_cluster_gcp"
-      #   new_cluster:
-      #     spark_version: "16.4.x-scala2.12"
-      #     num_workers: 4
-      #     node_type_id: "n2-highmem-4"
-      #     gcp_attributes:
-      #       first_on_demand: 1
-      #       availability: PREEMPTIBLE_GCP
-      #       zone_id: "HA"
-      #     spark_env_vars:
-      #       PYSPARK_PYTHON: /databricks/python3/bin/python3
-      #     enable_elastic_disk: false
-      #     data_security_mode: SINGLE_USER
-      #     runtime_engine: PHOTON
-      #     custom_tags:
-      #       team: "data-engineering"
-      #       cost-center: "engineering"
+      
       # - job_cluster_key: "Job_cluster_azure"
       #   new_cluster:
       #     spark_version: "16.4.x-scala2.12"
+      #     node_type_id: "Standard_DS3_v2"
       #     num_workers: 4
-      #     node_type_id: "Standard_D4ds_v5"
       #     azure_attributes:
+      #       availability: SPOT_WITH_FALLBACK_AZURE
       #       first_on_demand: 1
-      #       availability: SPOT_AZURE
-      #     spark_env_vars:
-      #       PYSPARK_PYTHON: /databricks/python3/bin/python3
-      #     enable_elastic_disk: false
       #     data_security_mode: SINGLE_USER
-      #     runtime_engine: PHOTON
-      #     custom_tags:
-      #       team: "data-engineering"
-      #       cost-center: "engineering"
+      
+      # - job_cluster_key: "Job_cluster_gcp"
+      #   new_cluster:
+      #     spark_version: "16.4.x-scala2.12"
+      #     node_type_id: "n1-standard-4"
+      #     num_workers: 4
+      #     gcp_attributes:
+      #       availability: PREEMPTIBLE_WITH_FALLBACK_GCP
+      #       boot_disk_size: 100
+      #     data_security_mode: SINGLE_USER
+    
+    # Notification settings
     notification_settings:
       email_notifications:
-        on_start: ["team@example.com"]
-        on_success: ["team@example.com"]
-        on_failure: ["alerts@example.com", "team@example.com"]
-        on_duration_warning_threshold_exceeded: []
-      no_alert_for_skipped_runs: false
-      no_alert_for_canceled_runs: false
+        on_failure: ["alerts@example.com"]
+        on_duration_warning_threshold_exceeded: ["alerts@example.com"]
       alert_on_last_attempt: true
+    
     tasks:
-      - task_key: "task_with_existing_cluster"
-        task_type: "notebook"
-        file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_jobs_meta/examples/notebook_task/sample_ingestion_notebook"
-        existing_cluster_id: "1106-160244-2ko4u9ke"
-        parameters:
-          catalog: "fe_ppark_demo"
-          schema: "lakeflow_jobs_metadata"
-      
-      - task_key: "task_with_job_cluster_azure"
-        task_type: "notebook"
-        file_path: "/Workspace/Users/peter.park@databricks.com/ai-agent/02-agent-eval/02.1_agent_evaluation"
-        job_cluster_key: "Job_cluster_azure"
-        depends_on: ["task_with_existing_cluster"]
       - task_key: "task_with_job_cluster_aws"
         task_type: "notebook"
-        file_path: "/Workspace/Users/peter.park@databricks.com/ai-agent/02-agent-eval/02.1_agent_evaluation"
         job_cluster_key: "Job_cluster_aws"
-        depends_on: ["task_with_existing_cluster"]
-      - task_key: "task_with_job_cluster_gcp"
-        task_type: "notebook"
-        file_path: "/Workspace/Users/peter.park@databricks.com/ai-agent/02-agent-eval/02.1_agent_evaluation"
-        job_cluster_key: "Job_cluster_gcp"
-        depends_on: ["task_with_existing_cluster"]
+        file_path: "/Workspace/Users/peter.park@databricks.com/notebooks/sample"
+      
+      # - task_key: "task_with_job_cluster_azure"
+      #   task_type: "notebook"
+      #   job_cluster_key: "Job_cluster_azure"
+      #   file_path: "/Workspace/Users/peter.park@databricks.com/notebooks/sample"
+      
+      # - task_key: "task_with_job_cluster_gcp"
+      #   task_type: "notebook"
+      #   job_cluster_key: "Job_cluster_gcp"
+      #   file_path: "/Workspace/Users/peter.park@databricks.com/notebooks/sample"
       
       - task_key: "task_with_run_if"
         task_type: "sql_query"
-        depends_on: ["task_with_existing_cluster", "task_with_job_cluster_aws"]
+        depends_on: [
+          "task_with_job_cluster_aws", 
+          # "task_with_job_cluster_azure", 
+          # "task_with_job_cluster_gcp"
+          ]
         run_if: "AT_LEAST_ONE_SUCCESS"
-        sql_query: "SELECT CURRENT_TIMESTAMP() as run_time"
-        notification_settings:
-          email_notifications:
-            on_failure: ["task-owner@example.com"]
-          alert_on_last_attempt: true
-    parameters: 
-      - default: "default_value"
-        name: "test_parameter"
-      - default: "default_value"
-        name: "test_parameter_2"
-  # Example 7: Pipeline Task
-  - job_name: "pipeline_job"
-    description: "Run Lakeflow Declarative Pipelines task"
-    tasks:
-      - task_key: "run_pipeline"
-        task_type: "pipeline"
-        pipeline_id: "1165597e-f650-4bf3-9a4f-fc2f2d40d2c3"
-
-  # Example 8: dbt Task
-  - job_name: "dbt_job"
-    description: "Run dbt transformations"
-    environments:
-      - environment_key: "default_dbt"
-        spec:
-          environment_version: "4"
-          dependencies:
-            - "dbt-databricks>=1.0.0<2.0.0"
-    tasks:
-      - task_key: "run_dbt"
-        task_type: "dbt"
-        commands: "dbt run --models my_model"
-        warehouse_id: "4b9b953939869799"
-        project_directory: "/Workspace/Users/peter.park@databricks.com/dbt-project"
-        catalog: "fe_ppark_demo"
-        schema: "lakeflow_jobs_metadata"
-        environment_key: "default_dbt"
-
-  # Example 9: Job with Editable UI Mode
-  - job_name: "experimental_job"
-    description: "Experimental job that allows UI editing"
-    edit_mode: "EDITABLE"  # Allows editing in Databricks UI (not recommended for production)
-    max_concurrent_runs: 1
-    timeout_seconds: 3600
-    tasks:
-      - task_key: "experimental_task"
-        task_type: "notebook"
-        file_path: "/Workspace/Users/peter.park@databricks.com/lakeflow_jobs_meta/examples/notebook_task/sample_ingestion_notebook"
-        parameters:
-          mode: "test"
-
-  # Example 10: Job with Environments
-  - job_name: "job_with_environments"
-    description: "Job using Databricks environments"
-    environments:
-      - environment_key: "default_python"
-        spec:
-          dependencies:
-            - "dbt-databricks>=1.0.0<2.0.0"
-            - "/Workspace/Users/sharky@databricks.com/artifacts/reef_process-1.0-py32-none-any.whl"
-          environment_version: "4"
-      - environment_key: "default_scala"
-        spec:
-          environment_version: "4-scala-preview"
-          java_dependencies:
-            - "/Volumes/catalog/schema/volume/path/to/file.jar"
-    tasks:
-      - task_key: "python_task_with_env"
-        task_type: "python_wheel"
-        package_name: "my_package"
-        entry_point: "main"
-        environment_key: "default_python"
-      
-      - task_key: "scala_task_with_env"
-        task_type: "spark_jar"
-        main_class_name: "com.example.Main"
-        environment_key: "default_scala"
+        sql_query: "SELECT 'Cleanup completed' as status"
