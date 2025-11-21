@@ -39,6 +39,7 @@ class TestMetadataManager:
         call_args = mock_spark_session.sql.call_args[0][0]
         assert "CREATE TABLE IF NOT EXISTS" in call_args
         assert "test_catalog.schema.control_table" in call_args
+        assert "resource_id" in call_args  # New column in v0.2.0
     
     @patch('lakeflow_jobs_meta.metadata_manager._get_spark')
     def test_ensure_exists_table_creation_error(self, mock_get_spark, mock_spark_session):
@@ -59,10 +60,12 @@ class TestMetadataManager:
         with pytest.raises(ValueError):
             MetadataManager(None)
     
+    @patch('lakeflow_jobs_meta.metadata_manager._get_current_user')
     @patch('lakeflow_jobs_meta.metadata_manager._get_spark')
-    def test_load_yaml_valid(self, mock_get_spark, mock_spark_session, sample_yaml_config):
+    def test_load_yaml_valid(self, mock_get_spark, mock_get_current_user, mock_spark_session, sample_yaml_config):
         """Test loading valid YAML file."""
         mock_get_spark.return_value = mock_spark_session
+        mock_get_current_user.return_value = "test_user"
         
         # Create temporary YAML file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
@@ -70,17 +73,18 @@ class TestMetadataManager:
             tmp_path = tmp.name
         
         try:
-            # Mock DataFrame operations
             mock_df = MagicMock()
             mock_df.createOrReplaceTempView = MagicMock()
+            mock_df.filter.return_value.select.return_value.collect.return_value = []
             mock_spark_session.createDataFrame = MagicMock(return_value=mock_df)
+            mock_spark_session.table.return_value = mock_df
             mock_spark_session.sql = MagicMock()
             
             manager = MetadataManager("test_table")
-            tasks_loaded, job_names = manager.load_yaml(tmp_path)
+            tasks_loaded, resource_ids = manager.load_yaml(tmp_path)
             
             assert tasks_loaded == 1  # One task loaded
-            assert job_names == ['test_job']
+            assert resource_ids == ['test_job']
             mock_spark_session.createDataFrame.assert_called_once()
         finally:
             os.unlink(tmp_path)
@@ -96,12 +100,10 @@ class TestMetadataManager:
     def test_load_yaml_file_not_found_skip_validation(self, mock_get_spark, mock_spark_session):
         """Test skipping file existence validation."""
         mock_get_spark.return_value = mock_spark_session
-        # Mock sql() to succeed for table creation
-        mock_spark_session.sql = MagicMock()
-        
+
         manager = MetadataManager("test_table")
         
-        with pytest.raises(ValueError, match="Failed to parse YAML"):  # Should fail when trying to open file
+        with pytest.raises(ValueError, match="Failed to read YAML"):  # Should fail when trying to open file
             manager.load_yaml("nonexistent.yaml", validate_file_exists=False)
     
     @patch('lakeflow_jobs_meta.metadata_manager._get_spark')
@@ -120,12 +122,14 @@ class TestMetadataManager:
         finally:
             os.unlink(tmp_path)
     
+    @patch('lakeflow_jobs_meta.metadata_manager._get_current_user')
     @patch('lakeflow_jobs_meta.metadata_manager._get_spark')
-    def test_load_yaml_empty_jobs(self, mock_get_spark, mock_spark_session):
+    def test_load_yaml_empty_jobs(self, mock_get_spark, mock_get_current_user, mock_spark_session):
         """Test handling of YAML with no jobs."""
         mock_get_spark.return_value = mock_spark_session
+        mock_get_current_user.return_value = "test_user"
         
-        empty_config = {'jobs': []}
+        empty_config = {'jobs': {}}  # Empty dict in new format
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
             yaml.dump(empty_config, tmp)
@@ -133,13 +137,15 @@ class TestMetadataManager:
         
         try:
             mock_df = MagicMock()
+            mock_df.filter.return_value.select.return_value.collect.return_value = []
             mock_spark_session.createDataFrame = MagicMock(return_value=mock_df)
+            mock_spark_session.table.return_value = mock_df
             mock_spark_session.sql = MagicMock()
             
             manager = MetadataManager("test_table")
-            tasks_loaded, job_names = manager.load_yaml(tmp_path)
+            tasks_loaded, resource_ids = manager.load_yaml(tmp_path)
             assert tasks_loaded == 0
-            assert job_names == []
+            assert resource_ids == []
         finally:
             os.unlink(tmp_path)
     
@@ -161,20 +167,23 @@ class TestMetadataManager:
         finally:
             os.unlink(tmp_path)
     
+    @patch('lakeflow_jobs_meta.metadata_manager._get_current_user')
     @patch('lakeflow_jobs_meta.metadata_manager._get_spark')
-    def test_load_yaml_missing_task_type(self, mock_get_spark, mock_spark_session):
+    def test_load_yaml_missing_task_type(self, mock_get_spark, mock_get_current_user, mock_spark_session):
         """Test error when task_type is missing."""
         mock_get_spark.return_value = mock_spark_session
+        mock_get_current_user.return_value = "test_user"
         
         config = {
-            'jobs': [{
-                'job_name': 'test_job',
-                'tasks': [{
-                    'task_key': 'task1',
-                    'depends_on': []
-                    # Missing task_type - should raise error
-                }]
-            }]
+            'jobs': {
+                'test_job': {
+                    'tasks': [{
+                        'task_key': 'task1',
+                        'depends_on': []
+                        # Missing task_type - should raise error
+                    }]
+                }
+            }
         }
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
@@ -183,9 +192,9 @@ class TestMetadataManager:
         
         try:
             manager = MetadataManager("test_table")
-            tasks_loaded, job_names = manager.load_yaml(tmp_path)
+            tasks_loaded, resource_ids = manager.load_yaml(tmp_path)
             assert tasks_loaded == 0
-            assert len(job_names) == 0
+            assert len(resource_ids) == 0
         finally:
             os.unlink(tmp_path)
     
@@ -197,33 +206,31 @@ class TestMetadataManager:
         mock_get_current_user.return_value = "test_user"
         
         config = {
-            'jobs': [
-                {
-                    'job_name': 'valid_job',
+            'jobs': {
+                'valid_job': {
                     'tasks': [{
                         'task_key': 'task1',
                         'task_type': 'notebook_task',
                         'file_path': '/path/to/notebook'
                     }]
                 },
-                {
-                    'job_name': 'invalid_job',
+                'invalid_job': {
                     'tasks': [{
                         'task_key': 'task1',
                         'task_type': 'notebook_task',
                         'file_path': '/path/to/notebook',
-                        'depends_on': ['nonexistent_task']
+                        'depends_on': ['nonexistent_task']  # Invalid dependency
                     }]
                 },
-                {
-                    'job_name': 'another_valid_job',
+                'another_valid_job': {
                     'tasks': [{
                         'task_key': 'task1',
                         'task_type': 'sql_query_task',
-                        'sql_query': 'SELECT 1'
+                        'sql_query': 'SELECT 1',
+                        'warehouse_id': 'test'
                     }]
                 }
-            ]
+            }
         }
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
@@ -231,13 +238,19 @@ class TestMetadataManager:
             tmp_path = tmp.name
         
         try:
+            mock_df = MagicMock()
+            mock_df.filter.return_value.select.return_value.collect.return_value = []
+            mock_spark_session.createDataFrame = MagicMock(return_value=mock_df)
+            mock_spark_session.table.return_value = mock_df
+            mock_spark_session.sql = MagicMock()
+            
             manager = MetadataManager("test_table")
-            tasks_loaded, job_names = manager.load_yaml(tmp_path)
+            tasks_loaded, resource_ids = manager.load_yaml(tmp_path)
             assert tasks_loaded == 2
-            assert len(job_names) == 2
-            assert 'valid_job' in job_names
-            assert 'another_valid_job' in job_names
-            assert 'invalid_job' not in job_names
+            assert len(resource_ids) == 2
+            assert 'valid_job' in resource_ids
+            assert 'another_valid_job' in resource_ids
+            assert 'invalid_job' not in resource_ids
         finally:
             os.unlink(tmp_path)
     
@@ -245,8 +258,7 @@ class TestMetadataManager:
     def test_detect_changes_no_changes(self, mock_get_spark, mock_spark_session):
         """Test detection when no changes exist."""
         mock_get_spark.return_value = mock_spark_session
-        
-        # Mock DataFrame with no changes
+
         mock_df = MagicMock()
         mock_df.filter.return_value.count.return_value = 0
         mock_df.select.return_value.distinct.return_value.collect.return_value = []
@@ -264,11 +276,9 @@ class TestMetadataManager:
     def test_detect_changes_updated(self, mock_get_spark, mock_spark_session):
         """Test detection of updated jobs."""
         mock_get_spark.return_value = mock_spark_session
-        
-        # Mock DataFrame with changes
+
         mock_df = MagicMock()
-        
-        # Mock Row object
+
         mock_job_row = MagicMock()
         mock_job_row.__getitem__.side_effect = lambda key: {
             'job_name': 'job1',
@@ -281,7 +291,6 @@ class TestMetadataManager:
             'disabled': False
         }.get(key, default)
         
-        # Mock changed rows - filter().collect() returns changed rows
         mock_filtered_df = MagicMock()
         mock_filtered_df.collect.return_value = [mock_job_row]
         mock_df.filter.return_value = mock_filtered_df
@@ -302,11 +311,9 @@ class TestMetadataManager:
         mock_job_row = MagicMock()
         mock_job_row.__getitem__.side_effect = lambda key: 'new_job' if key == 'job_name' else None
         
-        # Mock for updated jobs (empty)
         mock_changed_df = MagicMock()
         mock_changed_df.count.return_value = 0
         
-        # Mock for all jobs
         mock_all_jobs_df = MagicMock()
         mock_all_jobs_df.select.return_value.distinct.return_value.collect.return_value = [mock_job_row]
         mock_df.select.return_value.distinct.return_value.collect.return_value = [mock_job_row]
@@ -327,7 +334,6 @@ class TestMetadataManager:
         manager = MetadataManager("test_table")
         changes = manager.detect_changes()
         
-        # Should return empty changes dict
         assert changes['new_jobs'] == []
         assert changes['updated_jobs'] == []
         assert changes['disabled_jobs'] == []
@@ -335,35 +341,35 @@ class TestMetadataManager:
     
     @patch('lakeflow_jobs_meta.metadata_manager._get_spark')
     def test_get_all_jobs(self, mock_get_spark, mock_spark_session):
-        """Test getting all jobs."""
+        """Test getting all jobs (returns resource_ids in v0.2.0)."""
         mock_get_spark.return_value = mock_spark_session
         
         mock_job_row1 = MagicMock()
-        mock_job_row1.__getitem__.side_effect = lambda key: 'job1' if key == 'job_name' else None
+        mock_job_row1.__getitem__.side_effect = lambda key: 'job1' if key == 'resource_id' else None
         
         mock_job_row2 = MagicMock()
-        mock_job_row2.__getitem__.side_effect = lambda key: 'job2' if key == 'job_name' else None
+        mock_job_row2.__getitem__.side_effect = lambda key: 'job2' if key == 'resource_id' else None
         
         mock_df = MagicMock()
         mock_df.select.return_value.distinct.return_value.collect.return_value = [mock_job_row1, mock_job_row2]
         mock_spark_session.table.return_value = mock_df
         
         manager = MetadataManager("test_table")
-        jobs = manager.get_all_jobs()
+        resource_ids = manager.get_all_jobs()
         
-        assert len(jobs) == 2
-        assert 'job1' in jobs
-        assert 'job2' in jobs
+        assert len(resource_ids) == 2
+        assert 'job1' in resource_ids
+        assert 'job2' in resource_ids
     
     @patch('lakeflow_jobs_meta.metadata_manager._get_spark')
     def test_get_job_tasks(self, mock_get_spark, mock_spark_session):
         """Test getting tasks for a job."""
         mock_get_spark.return_value = mock_spark_session
         
-        # Mock task row with asDict method
         task_data = {
             'task_key': 'task1',
             'job_name': 'job1',
+            'resource_id': 'job1',
             'depends_on': None,
             'disabled': False,
             'task_type': 'notebook',
@@ -383,67 +389,72 @@ class TestMetadataManager:
         assert len(tasks) == 1
         assert tasks[0]['task_key'] == 'task1'
     
-    @patch('lakeflow_jobs_meta.metadata_manager.MetadataManager.load_yaml')
+    @patch('lakeflow_jobs_meta.metadata_manager._get_current_user')
     @patch('lakeflow_jobs_meta.metadata_manager._get_spark')
-    def test_sync_from_volume(self, mock_get_spark, mock_load_yaml):
-        """Test syncing YAML files from volume."""
-        # Mock Spark session
+    def test_sync_from_volume(self, mock_get_spark, mock_get_current_user):
+        """Test syncing YAML files from volume (atomic loading in v0.2.0)."""
+        mock_get_current_user.return_value = "test_user"
+        
         mock_spark = MagicMock()
         mock_get_spark.return_value = mock_spark
         
-        # Mock file listing using Spark SQL LIST
-        mock_row1 = MagicMock()
-        mock_row1_data = {"name": "config1.yaml", "path": "/Volumes/test/config1.yaml", "type": "file"}
-        mock_row1.__getitem__ = lambda key: mock_row1_data.get(key)
-        mock_row1.get = lambda key, default="": mock_row1_data.get(key, default)
+        mock_dbutils = MagicMock()
+        mock_file1 = MagicMock()
+        mock_file1.isDir.return_value = False
+        mock_file1.name = "config1.yaml"
+        mock_file1.path = "dbfs:/Volumes/test/config1.yaml"
         
-        mock_row2 = MagicMock()
-        mock_row2_data = {"name": "config2.yaml", "path": "/Volumes/test/config2.yaml", "type": "file"}
-        mock_row2.__getitem__ = lambda key: mock_row2_data.get(key)
-        mock_row2.get = lambda key, default="": mock_row2_data.get(key, default)
+        mock_file2 = MagicMock()
+        mock_file2.isDir.return_value = False
+        mock_file2.name = "config2.yaml"
+        mock_file2.path = "dbfs:/Volumes/test/config2.yaml"
         
-        mock_row3 = MagicMock()
-        mock_row3_data = {"name": "data.txt", "path": "/Volumes/test/data.txt", "type": "file"}
-        mock_row3.__getitem__ = lambda key: mock_row3_data.get(key)
-        mock_row3.get = lambda key, default="": mock_row3_data.get(key, default)
+        mock_dbutils.fs.ls.return_value = [mock_file1, mock_file2]
         
-        mock_spark.sql.return_value.collect.return_value = [mock_row1, mock_row2, mock_row3]
-        mock_spark.sparkContext.textFile.return_value.collect.return_value = ["test: yaml", "content: true"]
+        yaml_content1 = "jobs:\n  test_job1:\n    tasks:\n      - task_key: task1\n        task_type: notebook\n        file_path: /test"
+        yaml_content2 = "jobs:\n  test_job2:\n    tasks:\n      - task_key: task1\n        task_type: notebook\n        file_path: /test"
+        mock_dbutils.fs.head.side_effect = [yaml_content1, yaml_content2]
         
-        mock_load_yaml.return_value = (5, ['job1'])  # 5 tasks loaded, 1 job
+        mock_df = MagicMock()
+        mock_df.filter.return_value.select.return_value.collect.return_value = []
+        mock_spark.createDataFrame = MagicMock(return_value=mock_df)
+        mock_spark.table.return_value = mock_df
+        mock_spark.sql = MagicMock()
         
-        manager = MetadataManager("test_table")
-        # Mock the load_yaml method
-        manager.load_yaml = mock_load_yaml
-        
-        tasks_loaded, job_names = manager.sync_from_volume("/Volumes/test/volume")
-        
-        assert tasks_loaded == 10  # 5 + 5 from two files
-        assert mock_spark.sql.called
-        assert mock_load_yaml.call_count == 2  # Called for each YAML file
+        with patch('lakeflow_jobs_meta.metadata_manager._get_dbutils', return_value=mock_dbutils):
+            manager = MetadataManager("test_table")
+            tasks_loaded, resource_ids = manager.sync_from_volume("/Volumes/test/volume")
+            
+            assert tasks_loaded == 2
+            assert len(resource_ids) == 2
+            assert mock_spark.createDataFrame.called
     
+    @patch('lakeflow_jobs_meta.metadata_manager._get_dbutils')
     @patch('lakeflow_jobs_meta.metadata_manager._get_spark')
-    def test_sync_from_volume_no_files(self, mock_get_spark):
+    def test_sync_from_volume_no_files(self, mock_get_spark, mock_get_dbutils):
         """Test handling when no YAML files exist."""
         mock_spark = MagicMock()
         mock_get_spark.return_value = mock_spark
         
-        # Mock empty directory listing
-        mock_spark.sql.return_value.filter.return_value.collect.return_value = []
+        mock_dbutils = MagicMock()
+        mock_dbutils.fs.ls.return_value = []
+        mock_get_dbutils.return_value = mock_dbutils
         
         manager = MetadataManager("test_table")
-        tasks_loaded, job_names = manager.sync_from_volume("/Volumes/test/volume")
+        tasks_loaded, resource_ids = manager.sync_from_volume("/Volumes/test/volume")
         
         assert tasks_loaded == 0
-        assert job_names == []
+        assert resource_ids == []
     
+    @patch('lakeflow_jobs_meta.metadata_manager._get_dbutils')
     @patch('lakeflow_jobs_meta.metadata_manager._get_spark')
-    def test_sync_from_volume_dbutils_not_available(self, mock_get_spark):
-        """Test error when spark list fails."""
+    def test_sync_from_volume_dbutils_not_available(self, mock_get_spark, mock_get_dbutils):
+        """Test error when dbutils and spark list fails."""
         mock_spark = MagicMock()
         mock_get_spark.return_value = mock_spark
+        mock_get_dbutils.return_value = None
         mock_spark.sql.side_effect = Exception("Unable to list files")
         
         manager = MetadataManager("test_table")
-        with pytest.raises(Exception, match="Unable to list files"):
+        with pytest.raises(RuntimeError, match="Failed to sync YAML files from volume"):
             manager.sync_from_volume("/Volumes/test/volume")

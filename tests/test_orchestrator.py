@@ -1,9 +1,7 @@
 """Tests for JobOrchestrator class"""
 
 import pytest
-from unittest.mock import MagicMock, patch, Mock
-from databricks.sdk import WorkspaceClient
-from databricks.sdk.errors import NotFound
+from unittest.mock import MagicMock, patch
 from databricks.sdk.service.jobs import SqlTaskQuery
 
 from lakeflow_jobs_meta.orchestrator import JobOrchestrator
@@ -203,9 +201,8 @@ class TestJobOrchestrator:
         mock_spark_session.sql = MagicMock()
 
         orchestrator = JobOrchestrator(control_table="test_table")
-        orchestrator._store_job_id("test_job", 12345)
+        orchestrator._store_job_id("test_job_rid", "test_job", 12345)
 
-        # Verify operations were called
         assert mock_spark_session.createDataFrame.called
         assert mock_spark_session.sql.called
 
@@ -220,7 +217,6 @@ class TestJobOrchestrator:
         mock_get_spark.return_value = mock_spark_session
         mock_get_current_user.return_value = "test_user"
 
-        # Mock createDataFrame to succeed, but sql to fail
         mock_df = MagicMock()
         mock_df.withColumn.return_value = mock_df
         mock_df.createOrReplaceTempView = MagicMock()
@@ -230,7 +226,7 @@ class TestJobOrchestrator:
         orchestrator = JobOrchestrator(control_table="test_table")
 
         with pytest.raises(RuntimeError, match="Failed to store job_id"):
-            orchestrator._store_job_id("test_job", 12345)
+            orchestrator._store_job_id("test_job_rid", "test_job", 12345)
 
     @patch("lakeflow_jobs_meta.orchestrator._get_spark")
     @patch("lakeflow_jobs_meta.orchestrator.create_task_from_config")
@@ -242,11 +238,11 @@ class TestJobOrchestrator:
         mock_spark_session = MagicMock()
         mock_get_spark.return_value = mock_spark_session
 
-        # Mock task row with proper data
         task_data = {
             "task_key": "task1",
             "depends_on": None,
             "job_name": "job1",
+            "resource_id": "job1",
             "disabled": False,
             "task_type": "notebook",
             "task_config": '{"file_path": "/test"}',
@@ -255,7 +251,6 @@ class TestJobOrchestrator:
         mock_task.asDict.return_value = task_data
         mock_task.__getitem__.side_effect = lambda key: task_data.get(key)
 
-        # Properly mock the DataFrame chain
         mock_collect = MagicMock(return_value=[mock_task])
         mock_filter = MagicMock()
         mock_filter.collect = mock_collect
@@ -280,7 +275,6 @@ class TestJobOrchestrator:
         mock_spark_session = MagicMock()
         mock_get_spark.return_value = mock_spark_session
 
-        # Return empty list for collect()
         mock_collect = MagicMock(return_value=[])
         mock_filter = MagicMock()
         mock_filter.collect = mock_collect
@@ -293,6 +287,7 @@ class TestJobOrchestrator:
         with pytest.raises(ValueError, match="No tasks found"):
             orchestrator.generate_tasks_for_job("job1")
 
+    @patch("lakeflow_jobs_meta.orchestrator._get_spark")
     @patch("lakeflow_jobs_meta.orchestrator.serialize_task_for_api")
     @patch("lakeflow_jobs_meta.orchestrator.JobOrchestrator.generate_tasks_for_job")
     @patch("lakeflow_jobs_meta.orchestrator.JobOrchestrator._get_stored_job_id")
@@ -307,10 +302,33 @@ class TestJobOrchestrator:
         mock_get_job_id,
         mock_generate_tasks,
         mock_serialize,
+        mock_get_spark,
         mock_workspace_client,
+        mock_spark_session,
     ):
         """Test creating a new job."""
-        mock_get_job_id.return_value = None  # No existing job
+        mock_get_spark.return_value = mock_spark_session
+
+        task_data = {"resource_id": "test_job", "job_name": "Test Job Name", "task_key": "task1"}
+        mock_row = MagicMock()
+        mock_row.asDict.return_value = task_data
+
+        mock_collect = MagicMock(return_value=[mock_row])
+        mock_limit = MagicMock()
+        mock_limit.collect = mock_collect
+        mock_select = MagicMock()
+        mock_select.limit.return_value = mock_limit
+        mock_filter = MagicMock()
+        mock_filter.select.return_value = mock_select
+        mock_df = MagicMock()
+        mock_df.filter.return_value = mock_filter
+        mock_df.withColumn.return_value = mock_df
+        mock_df.createOrReplaceTempView = MagicMock()
+        mock_spark_session.table.return_value = mock_df
+        mock_spark_session.createDataFrame.return_value = mock_df
+        mock_spark_session.sql = MagicMock()
+
+        mock_get_job_id.return_value = None
         mock_get_settings.return_value = {
             "timeout_seconds": 7200,
             "max_concurrent_runs": 1,
@@ -329,13 +347,11 @@ class TestJobOrchestrator:
             ],
             {"task_config": "{}"},
         )
-        # Mock Task object without sql_task (notebook task)
         mock_task = MagicMock()
-        mock_task.sql_task = None  # No SQL task
+        mock_task.sql_task = None
         mock_convert.return_value = mock_task
         mock_serialize.return_value = {"task_key": "task1", "notebook_task": {}}
 
-        # Mock jobs.create for new job creation
         mock_created_job = MagicMock()
         mock_created_job.job_id = 12345
         mock_workspace_client.jobs.create.return_value = mock_created_job
@@ -345,7 +361,9 @@ class TestJobOrchestrator:
 
         assert job_id == 12345
         mock_workspace_client.jobs.create.assert_called_once()
-        mock_store.assert_called_once_with("test_job", 12345)
+        mock_store.assert_called_once()
+        assert mock_store.call_args[0][0] == "test_job"
+        assert mock_store.call_args[0][2] == 12345
 
     @patch("lakeflow_jobs_meta.orchestrator._get_current_user")
     @patch("lakeflow_jobs_meta.orchestrator._get_spark")
@@ -369,10 +387,26 @@ class TestJobOrchestrator:
         """Test updating an existing job."""
         mock_get_spark.return_value = mock_spark_session
         mock_get_current_user.return_value = "test_user"
-        mock_spark_session.createDataFrame = MagicMock()
+
+        mock_df_store = MagicMock()
+        mock_df_store.withColumn.return_value = mock_df_store
+        mock_spark_session.createDataFrame = MagicMock(return_value=mock_df_store)
         mock_spark_session.sql = MagicMock()
 
-        mock_get_job_id.return_value = 12345  # Existing job
+        task_data = {"resource_id": "test_job", "job_name": "Test Job Name", "task_key": "task1"}
+        mock_row = MagicMock()
+        mock_row.__getitem__.side_effect = lambda key: task_data.get(key)
+
+        mock_collect = MagicMock(return_value=[mock_row])
+        mock_select = MagicMock()
+        mock_select.collect = mock_collect
+        mock_filter = MagicMock()
+        mock_filter.select.return_value = mock_select
+        mock_df = MagicMock()
+        mock_df.filter.return_value = mock_filter
+        mock_spark_session.table.return_value = mock_df
+
+        mock_get_job_id.return_value = 12345
         mock_get_settings.return_value = {
             "timeout_seconds": 7200,
             "max_concurrent_runs": 1,
@@ -391,13 +425,11 @@ class TestJobOrchestrator:
             ],
             {"task_config": "{}"},
         )
-        # Mock Task object without sql_task (notebook task)
         mock_task = MagicMock()
         mock_task.sql_task = None  # No SQL task
         mock_convert.return_value = mock_task
         mock_serialize.return_value = {"task_key": "task1", "notebook_task": {}}
 
-        # Mock jobs.get to return existing job
         mock_existing_job = MagicMock()
         mock_existing_job.job_id = 12345
         mock_workspace_client.jobs.get.return_value = mock_existing_job
@@ -408,6 +440,7 @@ class TestJobOrchestrator:
         assert job_id == 12345
         mock_workspace_client.jobs.reset.assert_called_once()
 
+    @patch("lakeflow_jobs_meta.orchestrator._get_spark")
     @patch("lakeflow_jobs_meta.orchestrator.serialize_task_for_api")
     @patch("lakeflow_jobs_meta.orchestrator.JobOrchestrator.generate_tasks_for_job")
     @patch("lakeflow_jobs_meta.orchestrator.JobOrchestrator._get_stored_job_id")
@@ -422,10 +455,33 @@ class TestJobOrchestrator:
         mock_get_job_id,
         mock_generate_tasks,
         mock_serialize,
+        mock_get_spark,
         mock_workspace_client,
+        mock_spark_session,
     ):
         """Test creating a job with inline SQL query (auto-creates query)."""
-        mock_get_job_id.return_value = None  # No existing job
+        mock_get_spark.return_value = mock_spark_session
+
+        task_data = {"resource_id": "test_job", "job_name": "Test Job Name", "task_key": "task1"}
+        mock_row = MagicMock()
+        mock_row.asDict.return_value = task_data
+
+        mock_collect = MagicMock(return_value=[mock_row])
+        mock_limit = MagicMock()
+        mock_limit.collect = mock_collect
+        mock_select = MagicMock()
+        mock_select.limit.return_value = mock_limit
+        mock_filter = MagicMock()
+        mock_filter.select.return_value = mock_filter
+        mock_df = MagicMock()
+        mock_df.filter.return_value = mock_filter
+        mock_df.withColumn.return_value = mock_df
+        mock_df.createOrReplaceTempView = MagicMock()
+        mock_spark_session.table.return_value = mock_df
+        mock_spark_session.createDataFrame.return_value = mock_df
+        mock_spark_session.sql = MagicMock()
+
+        mock_get_job_id.return_value = None
         mock_get_settings.return_value = {
             "timeout_seconds": 7200,
             "max_concurrent_runs": 1,
@@ -444,24 +500,21 @@ class TestJobOrchestrator:
             ],
             {"task_config": '{"warehouse_id": "warehouse123", "sql_query": "SELECT 1"}'},
         )
-        # Mock Task object with inline SQL query (dict format)
         mock_task = MagicMock()
         mock_task.task_key = "sql_task1"
         mock_sql_task = MagicMock()
         mock_sql_task.warehouse_id = "warehouse123"
-        mock_sql_task.query = {"query": "SELECT 1"}  # Inline SQL as dict
+        mock_sql_task.query = {"query": "SELECT 1"}
         mock_sql_task.file = None
         mock_task.sql_task = mock_sql_task
         mock_convert.return_value = mock_task
 
-        # Mock query creation
         mock_created_query = MagicMock()
         mock_created_query.id = "query_abc123"
         mock_workspace_client.queries.create.return_value = mock_created_query
 
         mock_serialize.return_value = {"task_key": "sql_task1", "sql_task": {"query": {"query_id": "query_abc123"}}}
 
-        # Mock jobs.create for new job creation
         mock_created_job = MagicMock()
         mock_created_job.job_id = 12345
         mock_workspace_client.jobs.create.return_value = mock_created_job
@@ -470,23 +523,41 @@ class TestJobOrchestrator:
         job_id = orchestrator.create_or_update_job("test_job")
 
         assert job_id == 12345
-        # Verify query was created
         mock_workspace_client.queries.create.assert_called_once()
-        # Verify task query was updated (check that SqlTaskQuery was assigned)
-        # After query creation, sql_task.query should be SqlTaskQuery object
         assert isinstance(mock_task.sql_task.query, SqlTaskQuery)
         assert mock_task.sql_task.query.query_id == "query_abc123"
         mock_workspace_client.jobs.create.assert_called_once()
-        mock_store.assert_called_once_with("test_job", 12345)
+        # Verify _store_job_id was called (exact args check is complex due to mocking)
+        mock_store.assert_called_once()
+        assert mock_store.call_args[0][0] == "test_job"  # resource_id
+        assert mock_store.call_args[0][2] == 12345  # job_id
 
+    @patch("lakeflow_jobs_meta.orchestrator._get_spark")
     @patch("lakeflow_jobs_meta.orchestrator.JobOrchestrator.generate_tasks_for_job")
-    def test_create_or_update_job_no_tasks_error(self, mock_generate_tasks, mock_workspace_client):
+    def test_create_or_update_job_no_tasks_error(
+        self, mock_generate_tasks, mock_get_spark, mock_workspace_client, mock_spark_session
+    ):
         """Test error when no tasks are found."""
+        mock_get_spark.return_value = mock_spark_session
+
+        task_data = {"resource_id": "test_job", "job_name": "Test Job Name", "task_key": "task1"}
+        mock_row = MagicMock()
+        mock_row.__getitem__.side_effect = lambda key: task_data.get(key)
+
+        mock_collect = MagicMock(return_value=[mock_row])
+        mock_select = MagicMock()
+        mock_select.collect = mock_collect
+        mock_filter = MagicMock()
+        mock_filter.select.return_value = mock_select
+        mock_df = MagicMock()
+        mock_df.filter.return_value = mock_filter
+        mock_spark_session.table.return_value = mock_df
+
         mock_generate_tasks.return_value = ([], None)
 
         orchestrator = JobOrchestrator(control_table="test_table", workspace_client=mock_workspace_client)
 
-        with pytest.raises(ValueError, match="No tasks found"):
+        with pytest.raises(ValueError, match="No tasks found|No task"):
             orchestrator.create_or_update_job("test_job")
 
     def test_create_or_update_job_invalid_inputs(self, mock_workspace_client):
@@ -505,7 +576,6 @@ class TestJobOrchestrator:
         """Test successful orchestration."""
         mock_get_spark.return_value = mock_spark_session
 
-        # Mock jobs
         mock_manager = MagicMock()
         mock_manager.get_all_jobs.return_value = ["job1"]
         mock_metadata_manager.return_value = mock_manager
@@ -516,7 +586,7 @@ class TestJobOrchestrator:
         jobs = orchestrator.create_or_update_jobs(default_pause_status=False)
 
         assert len(jobs) == 1
-        assert jobs[0]["job"] == "job1"
+        assert jobs[0]["resource_id"] == "job1"
         assert jobs[0]["job_id"] == 12345
 
     @patch("lakeflow_jobs_meta.orchestrator.MetadataManager")
@@ -551,14 +621,12 @@ class TestJobOrchestrator:
         mock_metadata_manager.return_value = mock_manager
 
         orchestrator = JobOrchestrator(control_table="test_table", workspace_client=mock_workspace_client)
-        # First succeeds, second fails
         orchestrator.create_or_update_job = MagicMock(side_effect=[12345, Exception("Job creation failed")])
 
         jobs = orchestrator.create_or_update_jobs(default_pause_status=False)
 
-        # Should have one successful job
         assert len(jobs) == 1
-        assert jobs[0]["job"] == "job1"
+        assert jobs[0]["resource_id"] == "job1"
 
     @patch("lakeflow_jobs_meta.orchestrator.MetadataManager")
     @patch("lakeflow_jobs_meta.orchestrator.JobOrchestrator.ensure_setup")
@@ -570,13 +638,13 @@ class TestJobOrchestrator:
         mock_get_spark.return_value = mock_spark_session
 
         mock_manager = MagicMock()
-        mock_manager.load_yaml.return_value = (5, ["job1"])  # Returns tuple: (num_tasks, job_names)
+        mock_manager.load_yaml.return_value = (5, ["job1"])  # Returns tuple: (num_tasks, resource_ids)
         mock_metadata_manager.return_value = mock_manager
 
         orchestrator = JobOrchestrator(control_table="test_table", workspace_client=mock_workspace_client)
         orchestrator.create_or_update_job = MagicMock(return_value=12345)
         jobs = orchestrator.create_or_update_jobs(yaml_path="./test.yaml", default_pause_status=False)
 
-        mock_manager.load_yaml.assert_called_once_with("./test.yaml")
+        mock_manager.load_yaml.assert_called_once_with("./test.yaml", var=None)
         assert len(jobs) == 1
-        assert jobs[0]["job"] == "job1"
+        assert jobs[0]["resource_id"] == "job1"

@@ -52,6 +52,7 @@ def mock_workspace_client():
 def sample_task_data():
     """Sample task data from control table."""
     return {
+        'resource_id': 'test_job',
         'job_name': 'test_job',
         'task_key': 'test_task_1',
         'depends_on': '[]',
@@ -64,11 +65,10 @@ def sample_task_data():
 
 @pytest.fixture
 def sample_yaml_config():
-    """Sample YAML configuration."""
+    """Sample YAML configuration (v0.2.0 dict format)."""
     return {
-        'jobs': [
-            {
-                'job_name': 'test_job',
+        'jobs': {
+            'test_job': {
                 'tasks': [
                     {
                         'task_key': 'task1',
@@ -84,7 +84,7 @@ def sample_yaml_config():
                     }
                 ]
             }
-        ]
+        }
     }
 
 
