@@ -24,12 +24,13 @@ def _get_spark():
 
 def _get_dbutils():
     """Get dbutils instance (available in Databricks runtime).
-    
+
     Returns:
         dbutils instance or None if not available
     """
     try:
         from pyspark.dbutils import DBUtils
+
         spark = _get_spark()
         if spark:
             return DBUtils(spark)
@@ -150,7 +151,9 @@ class MetadataManager:
         except Exception as e:
             raise RuntimeError(f"Failed to create control table " f"'{self.control_table}': {str(e)}") from e
 
-    def load_yaml(self, yaml_path: str, validate_file_exists: bool = True, var: Optional[Dict[str, Any]] = None) -> tuple:
+    def load_yaml(
+        self, yaml_path: str, validate_file_exists: bool = True, var: Optional[Dict[str, Any]] = None
+    ) -> tuple:
         """Load YAML metadata file into control table.
 
         Args:
@@ -190,7 +193,9 @@ class MetadataManager:
 
         # Flatten YAML structure into DataFrame (grouped by job)
         rows = []
-        yaml_job_tasks = {}  # Track tasks per resource_id for deletion detection (key=resource_id, value=set of task_keys)
+        yaml_job_tasks = (
+            {}
+        )  # Track tasks per resource_id for deletion detection (key=resource_id, value=set of task_keys)
         resource_id_to_job_name = {}  # Track resource_id -> job_name mapping
         failed_jobs = []  # Track jobs that failed validation
 
@@ -200,13 +205,12 @@ class MetadataManager:
                 "YAML 'jobs' must be a dictionary with resource IDs as keys. "
                 "Example: jobs:\\n  my_job:\\n    tasks: [...]"
             )
-        
+
         # Check for duplicate resource_ids in this file (shouldn't happen with dict, but validate)
         if len(config["jobs"]) != len(set(config["jobs"].keys())):
             duplicates = [k for k in config["jobs"].keys() if list(config["jobs"].keys()).count(k) > 1]
             raise ValueError(
-                f"Duplicate resource_id(s) found in YAML file: {set(duplicates)}. "
-                "Each resource_id must be unique."
+                f"Duplicate resource_id(s) found in YAML file: {set(duplicates)}. " "Each resource_id must be unique."
             )
 
         for resource_id, job in config["jobs"].items():
@@ -214,12 +218,13 @@ class MetadataManager:
                 # Apply variable substitution to this job's config if variables provided
                 if var:
                     from .utils import substitute_variables
+
                     try:
                         # Convert job config to JSON, substitute, then parse back
                         job_json = json.dumps(job)
                         job_json = substitute_variables(job_json, var)
                         job = json.loads(job_json)
-                        
+
                         # Also substitute in resource_id
                         resource_id = substitute_variables(resource_id, var)
                     except ValueError as e:
@@ -443,7 +448,10 @@ class MetadataManager:
 
         for resource_id, yaml_task_keys in yaml_job_tasks.items():
             existing_tasks = (
-                spark.table(self.control_table).filter(F.col("resource_id") == resource_id).select("task_key").collect()
+                spark.table(self.control_table)
+                .filter(F.col("resource_id") == resource_id)
+                .select("task_key")
+                .collect()
             )
             existing_task_keys = {row["task_key"] for row in existing_tasks}
             tasks_to_delete = existing_task_keys - yaml_task_keys
@@ -451,7 +459,8 @@ class MetadataManager:
             if tasks_to_delete:
                 # Delete all tasks for this job that are not in YAML
                 delete_conditions = [
-                    (F.col("resource_id") == resource_id) & (F.col("task_key") == task_key) for task_key in tasks_to_delete
+                    (F.col("resource_id") == resource_id) & (F.col("task_key") == task_key)
+                    for task_key in tasks_to_delete
                 ]
                 # Combine conditions with OR
                 combined_condition = delete_conditions[0]
@@ -485,12 +494,11 @@ class MetadataManager:
         return (len(rows), list(yaml_job_tasks.keys()))
 
     def load_from_folder(self, folder_path: str, var: Optional[Dict[str, Any]] = None) -> tuple:
-        """Load all YAML files from a workspace folder into control table.
+        """Load all YAML files from a workspace folder into control table atomically.
 
         Lists all YAML files (.yaml, .yml) in the folder (including subdirectories),
-        reads each file, and loads them into the control table using load_yaml().
-        Each file is processed independently and errors in one file don't stop
-        processing of others.
+        parses ALL files first to validate them, then loads all data in a single
+        atomic operation. Either all files are loaded successfully or none are loaded.
 
         Args:
             folder_path: Path to workspace folder
@@ -504,6 +512,7 @@ class MetadataManager:
 
         Raises:
             FileNotFoundError: If folder doesn't exist
+            ValueError: If duplicate resource_ids found across files or validation fails
             RuntimeError: If folder operations fail
         """
         import glob
@@ -528,58 +537,268 @@ class MetadataManager:
 
         logger.info("Found %d YAML file(s) in folder '%s'", len(yaml_files), folder_path)
 
-        total_loaded = 0
-        all_job_names = set()
-        failed_files = []
+        # Phase 1: Parse all YAML files (validation only, no database writes)
+        all_rows = []
+        all_yaml_job_tasks = {}
+        seen_resource_ids = set()
 
         for yaml_file in yaml_files:
             try:
-                num_tasks, job_names = self.load_yaml(yaml_file, validate_file_exists=False, var=var)
-                
-                # Check for duplicate resource_ids across files - this should be an error
-                duplicates_found = []
-                for resource_id in job_names:
-                    if resource_id in all_job_names:
-                        duplicates_found.append(resource_id)
-                
-                if duplicates_found:
+                # Read and parse YAML
+                with open(yaml_file, "r", encoding="utf-8") as file:
+                    yaml_content = file.read()
+
+                # Parse YAML
+                config = yaml.safe_load(yaml_content)
+                if not config or "jobs" not in config:
+                    raise ValueError(f"YAML file must contain 'jobs' key")
+
+                if not isinstance(config["jobs"], dict):
                     raise ValueError(
-                        f"Duplicate resource_id(s) found across multiple YAML files: {duplicates_found}. "
-                        f"Resource_id '{duplicates_found[0]}' was already loaded from a previous file. "
-                        "Each resource_id must be unique across all YAML files."
+                        "YAML 'jobs' must be a dictionary with resource IDs as keys. "
+                        "Example: jobs:\\n  my_job:\\n    tasks: [...]"
                     )
-                
-                total_loaded += num_tasks
-                all_job_names.update(job_names)
-                logger.debug("Loaded %d task(s) from '%s'", num_tasks, yaml_file)
+
+                # Check for duplicate resource_ids in this file
+                if len(config["jobs"]) != len(set(config["jobs"].keys())):
+                    duplicates = [k for k in config["jobs"].keys() if list(config["jobs"].keys()).count(k) > 1]
+                    raise ValueError(
+                        f"Duplicate resource_id(s) found in YAML file: {set(duplicates)}. "
+                        "Each resource_id must be unique."
+                    )
+
+                # Process each job
+                for resource_id, job in config["jobs"].items():
+                    # Apply variable substitution
+                    if var:
+                        from .utils import substitute_variables
+
+                        job_json = json.dumps(job)
+                        job_json = substitute_variables(job_json, var)
+                        job = json.loads(job_json)
+                        resource_id = substitute_variables(resource_id, var)
+
+                    # Check for duplicate resource_id across files
+                    if resource_id in seen_resource_ids:
+                        raise ValueError(
+                            f"Duplicate resource_id '{resource_id}' found across multiple YAML files. "
+                            f"This resource_id appears in '{yaml_file}' and was already defined in a previous file. "
+                            "Each resource_id must be unique across all YAML files."
+                        )
+                    seen_resource_ids.add(resource_id)
+
+                    # job_name is either the 'name' field or defaults to resource_id
+                    job_name = job.get("name", resource_id)
+
+                    tasks = job.get("tasks", [])
+                    if not tasks:
+                        raise ValueError(f"Job '{job_name}' must have at least one task")
+
+                    # Extract job-level config
+                    job_level_keys = [
+                        "tags",
+                        "environments",
+                        "parameters",
+                        "timeout_seconds",
+                        "max_concurrent_runs",
+                        "queue",
+                        "continuous",
+                        "trigger",
+                        "schedule",
+                        "job_clusters",
+                        "notification_settings",
+                        "edit_mode",
+                    ]
+                    job_config_dict = {}
+                    for key in job_level_keys:
+                        if key in job:
+                            if key == "environments":
+                                job_config_dict["_job_environments"] = job[key]
+                            else:
+                                job_config_dict[key] = job[key]
+
+                    job_config_json = json.dumps(job_config_dict) if job_config_dict else json.dumps({})
+
+                    # Collect all task_keys
+                    task_keys_in_job = {task.get("task_key") for task in tasks if task.get("task_key")}
+                    if len(task_keys_in_job) != len(tasks):
+                        raise ValueError(f"All tasks must have 'task_key' field in job '{job_name}'")
+
+                    # Process each task
+                    job_task_keys = set()
+                    for task in tasks:
+                        task_key = task.get("task_key")
+                        task_type = task.get("task_type")
+                        if not task_type:
+                            raise ValueError(f"Task '{task_key}' must have 'task_type' field")
+
+                        # Validate depends_on
+                        depends_on = task.get("depends_on", [])
+                        if depends_on is None:
+                            depends_on = []
+                        if not isinstance(depends_on, list):
+                            raise ValueError(f"Task '{task_key}' depends_on must be a list")
+
+                        for dep_key in depends_on:
+                            if dep_key not in task_keys_in_job:
+                                raise ValueError(
+                                    f"Task '{task_key}' depends on '{dep_key}', "
+                                    f"but '{dep_key}' is not defined in job '{job_name}'"
+                                )
+
+                        if task_key in depends_on:
+                            raise ValueError(f"Task '{task_key}' cannot depend on itself")
+
+                        depends_on_json = json.dumps(depends_on)
+
+                        # Extract task config
+                        task_config_keys = [
+                            k for k in task.keys() if k not in ["task_key", "task_type", "depends_on", "disabled"]
+                        ]
+                        task_config = {k: task[k] for k in task_config_keys}
+                        task_config_json = json.dumps(task_config) if task_config else json.dumps({})
+
+                        disabled = task.get("disabled", False)
+
+                        # Add to rows
+                        all_rows.append(
+                            {
+                                "resource_id": resource_id,
+                                "job_name": job_name,
+                                "task_key": task_key,
+                                "depends_on": depends_on_json,
+                                "task_type": task_type,
+                                "job_config": job_config_json,
+                                "task_config": task_config_json,
+                                "disabled": disabled,
+                            }
+                        )
+
+                        job_task_keys.add(task_key)
+
+                    # Track tasks for this job
+                    all_yaml_job_tasks[resource_id] = job_task_keys
+
+                logger.debug("Validated %d task(s) from '%s'", len(job_task_keys), yaml_file)
+
             except Exception as e:
-                logger.error("Failed to load YAML file '%s': %s", yaml_file, str(e))
-                failed_files.append((yaml_file, str(e)))
-                continue
+                raise RuntimeError(
+                    f"Failed to load YAML files from folder '{folder_path}'. "
+                    f"Error in file '{yaml_file}': {str(e)}. "
+                    "No data has been loaded to the control table."
+                ) from e
 
-        if failed_files:
-            logger.warning(
-                "Failed to load %d file(s): %s",
-                len(failed_files),
-                [f[0] for f in failed_files],
+        if not all_rows:
+            logger.warning("No valid tasks found in folder '%s'", folder_path)
+            return (0, [])
+
+        # Phase 2: All files validated successfully - now write to database atomically
+        spark = _get_spark()
+        current_user = _get_current_user()
+
+        # Add audit fields
+        for row in all_rows:
+            row["created_by"] = current_user
+            row["updated_by"] = current_user
+
+        # Create DataFrame
+        from pyspark.sql.types import StructType, StructField, StringType, BooleanType
+
+        schema = StructType(
+            [
+                StructField("resource_id", StringType(), False),
+                StructField("job_name", StringType(), False),
+                StructField("task_key", StringType(), False),
+                StructField("depends_on", StringType(), False),
+                StructField("task_type", StringType(), False),
+                StructField("job_config", StringType(), False),
+                StructField("task_config", StringType(), False),
+                StructField("disabled", BooleanType(), False),
+                StructField("created_by", StringType(), False),
+                StructField("updated_by", StringType(), False),
+            ]
+        )
+
+        df = spark.createDataFrame(all_rows, schema=schema)
+        df.createOrReplaceTempView("yaml_data_folder")
+
+        # MERGE into control table (atomic operation)
+        spark.sql(
+            f"""
+            MERGE INTO {self.control_table} AS target
+            USING yaml_data_folder AS source
+            ON target.resource_id = source.resource_id AND target.task_key = source.task_key
+            WHEN MATCHED THEN
+                UPDATE SET
+                    job_name = source.job_name,
+                    depends_on = source.depends_on,
+                    task_type = source.task_type,
+                    task_config = source.task_config,
+                    job_config = source.job_config,
+                    disabled = source.disabled,
+                    updated_by = source.updated_by,
+                    updated_timestamp = current_timestamp()
+            WHEN NOT MATCHED THEN
+                INSERT (
+                    resource_id, job_name, task_key, depends_on, task_type,
+                    task_config, job_config, disabled, created_by,
+                    updated_by
+                )
+                VALUES (
+                    source.resource_id, source.job_name, source.task_key, source.depends_on,
+                    source.task_type, source.task_config, source.job_config,
+                    source.disabled, source.created_by, source.updated_by
+                )
+        """
+        )
+
+        # Delete tasks that exist in control table but not in any YAML file
+        from delta.tables import DeltaTable
+
+        delta_table = DeltaTable.forName(spark, self.control_table)
+
+        for resource_id, yaml_task_keys in all_yaml_job_tasks.items():
+            existing_tasks = (
+                spark.table(self.control_table)
+                .filter(F.col("resource_id") == resource_id)
+                .select("task_key")
+                .collect()
             )
+            existing_task_keys = {row["task_key"] for row in existing_tasks}
+            tasks_to_delete = existing_task_keys - yaml_task_keys
 
+            if tasks_to_delete:
+                delete_conditions = [
+                    (F.col("resource_id") == resource_id) & (F.col("task_key") == task_key)
+                    for task_key in tasks_to_delete
+                ]
+                combined_condition = delete_conditions[0]
+                for condition in delete_conditions[1:]:
+                    combined_condition = combined_condition | condition
+                delta_table.delete(combined_condition)
+                logger.debug(
+                    "Deleted %d task(s) for resource_id '%s' that are no longer in YAML",
+                    len(tasks_to_delete),
+                    resource_id,
+                )
+
+        resource_ids = list(all_yaml_job_tasks.keys())
         logger.info(
             "Successfully loaded %d total task(s) from %d YAML file(s) in folder '%s' (%d unique job(s))",
-            total_loaded,
-            len(yaml_files) - len(failed_files),
+            len(all_rows),
+            len(yaml_files),
             folder_path,
-            len(all_job_names),
+            len(resource_ids),
         )
-        return (total_loaded, list(all_job_names))
+
+        return (len(all_rows), resource_ids)
 
     def sync_from_volume(self, volume_path: str, var: Optional[Dict[str, Any]] = None) -> tuple:
-        """Load YAML files from Unity Catalog volume into control table.
+        """Load YAML files from Unity Catalog volume into control table atomically.
 
-        Lists all YAML files (.yaml, .yml) in the volume path (including
-        subdirectories), reads each file, and loads them into the control table
-        using load_yaml(). Each file is processed independently and errors in
-        one file don't stop processing of others.
+        Lists all YAML files (.yaml, .yml) in the volume path (including subdirectories),
+        parses ALL files first to validate them, then loads all data in a single atomic
+        operation. Either all files are loaded successfully or none are loaded.
 
         Args:
             volume_path: Path to Unity Catalog volume
@@ -593,6 +812,7 @@ class MetadataManager:
             - resource_ids_loaded: List of unique resource IDs that were loaded
 
         Raises:
+            ValueError: If duplicate resource_ids found across files or validation fails
             RuntimeError: If Spark is not available or volume operations fail
         """
         try:
@@ -610,8 +830,9 @@ class MetadataManager:
                 # Try using dbutils.fs.ls for recursive listing
                 # This is more compatible across DBR versions than LIST RECURSIVE
                 dbutils = _get_dbutils()
-                
+
                 if dbutils:
+
                     def list_files_recursive(path):
                         """Recursively list all files in a directory."""
                         files = []
@@ -621,24 +842,24 @@ class MetadataManager:
                                 if item.isDir():
                                     # Recursively list subdirectory
                                     files.extend(list_files_recursive(item.path))
-                                elif item.name.endswith(('.yaml', '.yml')):
+                                elif item.name.endswith((".yaml", ".yml")):
                                     files.append(item.path)
                         except Exception as e:
                             logger.warning(f"Failed to list directory {path}: {e}")
                         return files
-                    
+
                     yaml_files = list_files_recursive(volume_path)
                 else:
                     # dbutils not available, try LIST command without RECURSIVE
                     logger.debug("dbutils not available, trying LIST command")
                     files_df = spark.sql(f"LIST '{volume_path}'")
                     files_list = files_df.collect()
-                    
+
                     for row in files_list:
                         file_name = row.get("name", "")
                         file_path = row.get("path", "")
                         file_type = row.get("type", "")
-                        
+
                         # Only process files (not directories) with YAML extensions
                         if file_type.lower() == "file" and file_name.endswith((".yaml", ".yml")):
                             yaml_files.append(file_path)
@@ -653,12 +874,12 @@ class MetadataManager:
                     # Try LIST command one more time
                     files_df = spark.sql(f"LIST '{volume_path}'")
                     files_list = files_df.collect()
-                    
+
                     for row in files_list:
                         file_name = row.get("name", "")
                         file_path = row.get("path", "")
                         file_type = row.get("type", "")
-                        
+
                         if file_type.lower() == "file" and file_name.endswith((".yaml", ".yml")):
                             yaml_files.append(file_path)
                     if not yaml_files:
@@ -691,16 +912,17 @@ class MetadataManager:
 
             logger.info("Found %d YAML file(s) in volume '%s'", len(yaml_files), volume_path)
 
-            total_loaded = 0
-            all_job_names = set()
-            failed_files = []
+            # Phase 1: Read and parse all YAML files (validation only, no database writes)
+            all_rows = []
+            all_yaml_job_tasks = {}
+            seen_resource_ids = set()
 
             for yaml_file in yaml_files:
                 try:
                     # Read file content from volume
                     # Try multiple methods for compatibility across different Spark modes
                     file_content = None
-                    
+
                     # Method 1: Try using dbutils (works in all modes including Spark Connect)
                     dbutils = _get_dbutils()
                     if dbutils:
@@ -708,7 +930,7 @@ class MetadataManager:
                             file_content = dbutils.fs.head(yaml_file, 10485760)  # Read up to 10MB
                         except Exception as e:
                             logger.debug("dbutils.fs.head failed: %s", e)
-                    
+
                     # Method 2: Try using spark.read.text (works in Spark Connect)
                     if not file_content:
                         try:
@@ -717,7 +939,7 @@ class MetadataManager:
                             file_content = "\n".join(lines)
                         except Exception as e:
                             logger.debug("spark.read.text failed: %s", e)
-                    
+
                     # Method 3: Try using sparkContext (only works in non-Connect mode)
                     if not file_content:
                         try:
@@ -725,79 +947,255 @@ class MetadataManager:
                             file_content = "\n".join(file_content_lines)
                         except Exception as e:
                             logger.debug("sparkContext.textFile failed: %s", e)
-                    
+
                     if not file_content:
                         raise RuntimeError(f"Could not read file content from '{yaml_file}'")
 
-                    # Write to temp file for parsing
-                    # (yaml.safe_load requires file-like object)
-                    import tempfile
+                    # Parse YAML directly (no temp file needed for validation)
+                    config = yaml.safe_load(file_content)
+                    if not config or "jobs" not in config:
+                        raise ValueError(f"YAML file must contain 'jobs' key")
 
-                    tmp_path = None
-                    try:
-                        with tempfile.NamedTemporaryFile(
-                            mode="w",
-                            suffix=".yaml",
-                            delete=False,
-                            encoding="utf-8",
-                        ) as tmp:
-                            tmp.write(file_content)
-                            tmp_path = tmp.name
+                    if not isinstance(config["jobs"], dict):
+                        raise ValueError(
+                            "YAML 'jobs' must be a dictionary with resource IDs as keys. "
+                            "Example: jobs:\\n  my_job:\\n    tasks: [...]"
+                        )
 
-                        # Load YAML into control table
-                        num_tasks, job_names = self.load_yaml(tmp_path, validate_file_exists=False, var=var)
-                        
-                        # Check for duplicate resource_ids across files - this should be an error
-                        duplicates_found = []
-                        for resource_id in job_names:
-                            if resource_id in all_job_names:
-                                duplicates_found.append(resource_id)
-                        
-                        if duplicates_found:
+                    # Check for duplicate resource_ids in this file
+                    if len(config["jobs"]) != len(set(config["jobs"].keys())):
+                        duplicates = [k for k in config["jobs"].keys() if list(config["jobs"].keys()).count(k) > 1]
+                        raise ValueError(
+                            f"Duplicate resource_id(s) found in YAML file: {set(duplicates)}. "
+                            "Each resource_id must be unique."
+                        )
+
+                    # Process each job
+                    for resource_id, job in config["jobs"].items():
+                        # Apply variable substitution
+                        if var:
+                            from .utils import substitute_variables
+
+                            job_json = json.dumps(job)
+                            job_json = substitute_variables(job_json, var)
+                            job = json.loads(job_json)
+                            resource_id = substitute_variables(resource_id, var)
+
+                        # Check for duplicate resource_id across files
+                        if resource_id in seen_resource_ids:
                             raise ValueError(
-                                f"Duplicate resource_id(s) found across multiple YAML files: {duplicates_found}. "
-                                f"Resource_id '{duplicates_found[0]}' was already loaded from a previous file. "
+                                f"Duplicate resource_id '{resource_id}' found across multiple YAML files. "
+                                f"This resource_id appears in '{yaml_file}' and was already defined in a previous file. "
                                 "Each resource_id must be unique across all YAML files."
                             )
-                        
-                        total_loaded += num_tasks
-                        all_job_names.update(job_names)
-                        logger.debug("Loaded %d task(s) from '%s'", num_tasks, yaml_file)
-                    finally:
-                        # Clean up temp file
-                        if tmp_path and os.path.exists(tmp_path):
-                            try:
-                                os.unlink(tmp_path)
-                            except Exception as cleanup_error:
-                                logger.warning(
-                                    "Could not clean up temp file '%s': %s",
-                                    tmp_path,
-                                    str(cleanup_error),
-                                )
+                        seen_resource_ids.add(resource_id)
+
+                        # job_name is either the 'name' field or defaults to resource_id
+                        job_name = job.get("name", resource_id)
+
+                        tasks = job.get("tasks", [])
+                        if not tasks:
+                            raise ValueError(f"Job '{job_name}' must have at least one task")
+
+                        # Extract job-level config
+                        job_level_keys = [
+                            "tags",
+                            "environments",
+                            "parameters",
+                            "timeout_seconds",
+                            "max_concurrent_runs",
+                            "queue",
+                            "continuous",
+                            "trigger",
+                            "schedule",
+                            "job_clusters",
+                            "notification_settings",
+                            "edit_mode",
+                        ]
+                        job_config_dict = {}
+                        for key in job_level_keys:
+                            if key in job:
+                                if key == "environments":
+                                    job_config_dict["_job_environments"] = job[key]
+                                else:
+                                    job_config_dict[key] = job[key]
+
+                        job_config_json = json.dumps(job_config_dict) if job_config_dict else json.dumps({})
+
+                        # Collect all task_keys
+                        task_keys_in_job = {task.get("task_key") for task in tasks if task.get("task_key")}
+                        if len(task_keys_in_job) != len(tasks):
+                            raise ValueError(f"All tasks must have 'task_key' field in job '{job_name}'")
+
+                        # Process each task
+                        job_task_keys = set()
+                        for task in tasks:
+                            task_key = task.get("task_key")
+                            task_type = task.get("task_type")
+                            if not task_type:
+                                raise ValueError(f"Task '{task_key}' must have 'task_type' field")
+
+                            # Validate depends_on
+                            depends_on = task.get("depends_on", [])
+                            if depends_on is None:
+                                depends_on = []
+                            if not isinstance(depends_on, list):
+                                raise ValueError(f"Task '{task_key}' depends_on must be a list")
+
+                            for dep_key in depends_on:
+                                if dep_key not in task_keys_in_job:
+                                    raise ValueError(
+                                        f"Task '{task_key}' depends on '{dep_key}', "
+                                        f"but '{dep_key}' is not defined in job '{job_name}'"
+                                    )
+
+                            if task_key in depends_on:
+                                raise ValueError(f"Task '{task_key}' cannot depend on itself")
+
+                            depends_on_json = json.dumps(depends_on)
+
+                            # Extract task config
+                            task_config_keys = [
+                                k for k in task.keys() if k not in ["task_key", "task_type", "depends_on", "disabled"]
+                            ]
+                            task_config = {k: task[k] for k in task_config_keys}
+                            task_config_json = json.dumps(task_config) if task_config else json.dumps({})
+
+                            disabled = task.get("disabled", False)
+
+                            # Add to rows
+                            all_rows.append(
+                                {
+                                    "resource_id": resource_id,
+                                    "job_name": job_name,
+                                    "task_key": task_key,
+                                    "depends_on": depends_on_json,
+                                    "task_type": task_type,
+                                    "job_config": job_config_json,
+                                    "task_config": task_config_json,
+                                    "disabled": disabled,
+                                }
+                            )
+
+                            job_task_keys.add(task_key)
+
+                        # Track tasks for this job
+                        all_yaml_job_tasks[resource_id] = job_task_keys
+
+                    logger.debug("Validated %d task(s) from '%s'", len(job_task_keys), yaml_file)
 
                 except Exception as e:
-                    logger.error("Failed to load YAML file '%s': %s", yaml_file, str(e))
-                    failed_files.append((yaml_file, str(e)))
-                    continue
+                    raise RuntimeError(
+                        f"Failed to load YAML files from volume '{volume_path}'. "
+                        f"Error in file '{yaml_file}': {str(e)}. "
+                        "No data has been loaded to the control table."
+                    ) from e
 
-            if failed_files:
-                logger.warning(
-                    "Failed to load %d file(s): %s",
-                    len(failed_files),
-                    [f[0] for f in failed_files],
+            if not all_rows:
+                logger.warning("No valid tasks found in volume '%s'", volume_path)
+                return (0, [])
+
+            # Phase 2: All files validated successfully - now write to database atomically
+            current_user = _get_current_user()
+
+            # Add audit fields
+            for row in all_rows:
+                row["created_by"] = current_user
+                row["updated_by"] = current_user
+
+            # Create DataFrame
+            from pyspark.sql.types import StructType, StructField, StringType, BooleanType
+
+            schema = StructType(
+                [
+                    StructField("resource_id", StringType(), False),
+                    StructField("job_name", StringType(), False),
+                    StructField("task_key", StringType(), False),
+                    StructField("depends_on", StringType(), False),
+                    StructField("task_type", StringType(), False),
+                    StructField("job_config", StringType(), False),
+                    StructField("task_config", StringType(), False),
+                    StructField("disabled", BooleanType(), False),
+                    StructField("created_by", StringType(), False),
+                    StructField("updated_by", StringType(), False),
+                ]
+            )
+
+            df = spark.createDataFrame(all_rows, schema=schema)
+            df.createOrReplaceTempView("yaml_data_volume")
+
+            # MERGE into control table (atomic operation)
+            spark.sql(
+                f"""
+                MERGE INTO {self.control_table} AS target
+                USING yaml_data_volume AS source
+                ON target.resource_id = source.resource_id AND target.task_key = source.task_key
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        job_name = source.job_name,
+                        depends_on = source.depends_on,
+                        task_type = source.task_type,
+                        task_config = source.task_config,
+                        job_config = source.job_config,
+                        disabled = source.disabled,
+                        updated_by = source.updated_by,
+                        updated_timestamp = current_timestamp()
+                WHEN NOT MATCHED THEN
+                    INSERT (
+                        resource_id, job_name, task_key, depends_on, task_type,
+                        task_config, job_config, disabled, created_by,
+                        updated_by
+                    )
+                    VALUES (
+                        source.resource_id, source.job_name, source.task_key, source.depends_on,
+                        source.task_type, source.task_config, source.job_config,
+                        source.disabled, source.created_by, source.updated_by
+                    )
+            """
+            )
+
+            # Delete tasks that exist in control table but not in any YAML file
+            from delta.tables import DeltaTable
+
+            delta_table = DeltaTable.forName(spark, self.control_table)
+
+            for resource_id, yaml_task_keys in all_yaml_job_tasks.items():
+                existing_tasks = (
+                    spark.table(self.control_table)
+                    .filter(F.col("resource_id") == resource_id)
+                    .select("task_key")
+                    .collect()
                 )
+                existing_task_keys = {row["task_key"] for row in existing_tasks}
+                tasks_to_delete = existing_task_keys - yaml_task_keys
 
+                if tasks_to_delete:
+                    delete_conditions = [
+                        (F.col("resource_id") == resource_id) & (F.col("task_key") == task_key)
+                        for task_key in tasks_to_delete
+                    ]
+                    combined_condition = delete_conditions[0]
+                    for condition in delete_conditions[1:]:
+                        combined_condition = combined_condition | condition
+                    delta_table.delete(combined_condition)
+                    logger.debug(
+                        "Deleted %d task(s) for resource_id '%s' that are no longer in YAML",
+                        len(tasks_to_delete),
+                        resource_id,
+                    )
+
+            resource_ids = list(all_yaml_job_tasks.keys())
             logger.info(
                 "Successfully loaded %d total task(s) from %d YAML file(s) in volume '%s' (%d unique job(s))",
-                total_loaded,
-                len(yaml_files) - len(failed_files),
+                len(all_rows),
+                len(yaml_files),
                 volume_path,
-                len(all_job_names),
+                len(resource_ids),
             )
-            return (total_loaded, list(all_job_names))
+
+            return (len(all_rows), resource_ids)
 
         except Exception as e:
-            logger.error("Error syncing YAML from volume '%s': %s", volume_path, str(e))
             raise RuntimeError(f"Failed to sync YAML files from volume '{volume_path}': {str(e)}") from e
 
     def detect_changes(self, last_check_timestamp: Optional[str] = None) -> Dict[str, Any]:
