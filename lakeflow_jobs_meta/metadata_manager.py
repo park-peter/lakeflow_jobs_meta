@@ -200,6 +200,14 @@ class MetadataManager:
                 "YAML 'jobs' must be a dictionary with resource IDs as keys. "
                 "Example: jobs:\\n  my_job:\\n    tasks: [...]"
             )
+        
+        # Check for duplicate resource_ids in this file (shouldn't happen with dict, but validate)
+        if len(config["jobs"]) != len(set(config["jobs"].keys())):
+            duplicates = [k for k in config["jobs"].keys() if list(config["jobs"].keys()).count(k) > 1]
+            raise ValueError(
+                f"Duplicate resource_id(s) found in YAML file: {set(duplicates)}. "
+                "Each resource_id must be unique."
+            )
 
         for resource_id, job in config["jobs"].items():
             try:
@@ -527,6 +535,20 @@ class MetadataManager:
         for yaml_file in yaml_files:
             try:
                 num_tasks, job_names = self.load_yaml(yaml_file, validate_file_exists=False, var=var)
+                
+                # Check for duplicate resource_ids across files - this should be an error
+                duplicates_found = []
+                for resource_id in job_names:
+                    if resource_id in all_job_names:
+                        duplicates_found.append(resource_id)
+                
+                if duplicates_found:
+                    raise ValueError(
+                        f"Duplicate resource_id(s) found across multiple YAML files: {duplicates_found}. "
+                        f"Resource_id '{duplicates_found[0]}' was already loaded from a previous file. "
+                        "Each resource_id must be unique across all YAML files."
+                    )
+                
                 total_loaded += num_tasks
                 all_job_names.update(job_names)
                 logger.debug("Loaded %d task(s) from '%s'", num_tasks, yaml_file)
@@ -543,10 +565,11 @@ class MetadataManager:
             )
 
         logger.info(
-            "Successfully loaded %d total task(s) from %d YAML file(s) in folder '%s'",
+            "Successfully loaded %d total task(s) from %d YAML file(s) in folder '%s' (%d unique job(s))",
             total_loaded,
             len(yaml_files) - len(failed_files),
             folder_path,
+            len(all_job_names),
         )
         return (total_loaded, list(all_job_names))
 
@@ -723,6 +746,20 @@ class MetadataManager:
 
                         # Load YAML into control table
                         num_tasks, job_names = self.load_yaml(tmp_path, validate_file_exists=False, var=var)
+                        
+                        # Check for duplicate resource_ids across files - this should be an error
+                        duplicates_found = []
+                        for resource_id in job_names:
+                            if resource_id in all_job_names:
+                                duplicates_found.append(resource_id)
+                        
+                        if duplicates_found:
+                            raise ValueError(
+                                f"Duplicate resource_id(s) found across multiple YAML files: {duplicates_found}. "
+                                f"Resource_id '{duplicates_found[0]}' was already loaded from a previous file. "
+                                "Each resource_id must be unique across all YAML files."
+                            )
+                        
                         total_loaded += num_tasks
                         all_job_names.update(job_names)
                         logger.debug("Loaded %d task(s) from '%s'", num_tasks, yaml_file)
@@ -751,10 +788,11 @@ class MetadataManager:
                 )
 
             logger.info(
-                "Successfully loaded %d total task(s) from %d YAML file(s) " "in volume '%s'",
+                "Successfully loaded %d total task(s) from %d YAML file(s) in volume '%s' (%d unique job(s))",
                 total_loaded,
                 len(yaml_files) - len(failed_files),
                 volume_path,
+                len(all_job_names),
             )
             return (total_loaded, list(all_job_names))
 
