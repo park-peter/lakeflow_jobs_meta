@@ -551,7 +551,7 @@ class MetadataManager:
                 # Parse YAML
                 config = yaml.safe_load(yaml_content)
                 if not config or "jobs" not in config:
-                    raise ValueError(f"YAML file must contain 'jobs' key")
+                    raise ValueError("YAML file must contain 'jobs' key")
 
                 if not isinstance(config["jobs"], dict):
                     raise ValueError(
@@ -954,7 +954,7 @@ class MetadataManager:
                     # Parse YAML directly (no temp file needed for validation)
                     config = yaml.safe_load(file_content)
                     if not config or "jobs" not in config:
-                        raise ValueError(f"YAML file must contain 'jobs' key")
+                        raise ValueError("YAML file must contain 'jobs' key")
 
                     if not isinstance(config["jobs"], dict):
                         raise ValueError(
